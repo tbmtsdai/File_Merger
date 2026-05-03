@@ -6,6 +6,7 @@ interactive dashboard with offline-capable HTML export.
 """
 
 import io, os, re
+from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
@@ -999,10 +1000,11 @@ with tab_folder:
 
     if not folder_path:
         st.info("Enter a folder path above.")
-    elif not os.path.isdir(folder_path):
+    elif not (os.path.isdir(folder_path) or Path(folder_path).is_dir()):
         st.error(
             f"Folder not found. Path received by the app:\n\n"
             f"`{folder_path}`\n\n"
+            f"Debug (exact bytes): `{repr(folder_path)}`\n\n"
             "Tips: make sure the folder exists, the drive letter is correct, "
             "and there are no extra quotes or spaces in the path."
         )
