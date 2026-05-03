@@ -6,7 +6,6 @@ interactive dashboard with offline-capable HTML export.
 """
 
 import io, os, re
-from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
@@ -998,15 +997,24 @@ with tab_folder:
     folder_path = folder_path.strip().strip('"').strip("'").strip()
     output_name = output_name.strip().strip('"').strip("'").strip()
 
+    # Try to list the folder — more reliable than os.path.isdir() on OneDrive paths
+    _folder_ok = False
+    _folder_list_err = None
+    if folder_path:
+        try:
+            os.listdir(folder_path)
+            _folder_ok = True
+        except Exception as _e:
+            _folder_list_err = str(_e)
+
     if not folder_path:
         st.info("Enter a folder path above.")
-    elif not (os.path.isdir(folder_path) or Path(folder_path).is_dir()):
+    elif not _folder_ok:
         st.error(
-            f"Folder not found. Path received by the app:\n\n"
+            f"Folder not found or not accessible. Path received:\n\n"
             f"`{folder_path}`\n\n"
-            f"Debug (exact bytes): `{repr(folder_path)}`\n\n"
-            "Tips: make sure the folder exists, the drive letter is correct, "
-            "and there are no extra quotes or spaces in the path."
+            + (f"Error: `{_folder_list_err}`\n\n" if _folder_list_err else "")
+            + "Tips: make sure the folder exists and the drive letter is correct."
         )
     else:
         output_path    = os.path.join(folder_path, output_name)
