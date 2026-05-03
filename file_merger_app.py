@@ -992,6 +992,18 @@ with tab_folder:
         "groups their sheets by column structure, and merges matching groups. "
         "Supports **incremental append** when new files arrive.")
 
+    if not HAS_TKINTER:
+        st.error(
+            "**Folder Mode requires the app to be running locally on your computer.** "
+            "This feature needs access to your file system, which is not possible "
+            "on the cloud-hosted version.\n\n"
+            "To use Folder Mode:\n"
+            "1. Download the app files from GitHub\n"
+            "2. Double-click **`run_app.bat`** on your PC\n"
+            "3. The app opens at **http://localhost:8501** — Folder Mode will work there\n\n"
+            "The **Upload Files** and **Merge & Download** tabs work on both local and cloud.")
+        st.stop()
+
     # ── Browse button (native Windows folder picker) ──────────────────────────
     if HAS_TKINTER and st.button("📁 Browse for folder...", key="folder_browse_btn"):
         _root = tk.Tk()
