@@ -18,7 +18,7 @@ Anyone who has Python installed can run it — it is freely usable by any user f
 1. Make sure **Python 3.9+** is installed. Download from https://www.python.org/downloads/
    During install, check ✅ "Add Python to PATH".
 
-2. Double-click **`run_app.bat`** — it installs the required packages and launches the app.
+2. Double-click **`run_app.bat`** — it installs all required packages and launches the app.
 
 3. Your browser opens at **http://localhost:8501**
 
@@ -29,7 +29,7 @@ To stop the app, press `Ctrl+C` in the terminal window.
 ## Manual Setup (if run_app.bat does not work)
 
 ```
-pip install pandas openpyxl xlrd streamlit
+pip install -r requirements.txt
 streamlit run file_merger_app.py
 ```
 
@@ -51,18 +51,85 @@ Any number of columns, any column names — the app adapts to whatever files you
 
 ### 1. Learn Merge Types
 Live interactive examples using dummy employee data. Shows what each merge strategy
-produces before you commit to running it on your real files.
+produces — with a Venn diagram and a before/after table — before you commit to running
+it on your real files.
 
 ### 2. Upload Files
-Drag and drop 2–20 files. Preview the first 10 rows of each file and see row/column counts.
+Drag and drop 2–20 files. Preview the first rows of each sheet and see row/column counts.
 
 ### 3. Merge & Download
-Configure your merge strategy, run it, preview the result, and download as Excel or CSV.
+Three-step process:
+- **Step 1 — Column Alignment:** if files have different column names, a mapping form
+  appears so you can assign a canonical name to columns that mean the same thing
+  (e.g. "Customer Name" and "Client Name" → both become "Customer Name").
+- **Step 2 — Sheet Groups:** sheets with identical column sets are automatically grouped
+  for merging; sheets with different structures get separate output sheets.
+- **Step 3 — Merge Settings:** choose your strategy, run the merge, preview results,
+  download as Excel or CSV.
+
+After every merge you also see:
+- A **Data Type Cleaning report** listing every date parsed, whitespace stripped, or
+  city/region column title-cased.
+- A **Duplicate Audit** panel showing the exact row numbers of every removed duplicate,
+  with a downloadable CSV report.
 
 ### 4. Folder Mode
 Point to a folder on your computer. The app auto-detects all CSV/Excel files in it.
-Supports **incremental append** — if you ran a merge before, only new files are added
-(see *Folder Mode* section below).
+Supports **incremental append** — if you ran a merge before, only new files are added.
+Has the same column mapping, type cleaning, and duplicate audit as the Upload tab.
+
+### 5. Dashboard
+Auto-generates charts from the merged data immediately after any merge:
+- Records by source file (bar chart)
+- Date trends (line chart — any detected date column, groupable by day/week/month)
+- Categorical breakdowns (horizontal bar charts for city, region, zone, etc.)
+- Numeric column summary table
+- Missing value % by column
+- Filterable data explorer
+
+**Export as HTML:** generates a fully self-contained `.html` file that works offline
+in any browser — no Streamlit, no internet needed. Share it as a report.
+
+---
+
+## Column Alignment — How It Works
+
+When you upload files where the same data has different column names
+(e.g. "SR No" in one file, "Ticket ID" in another), the app detects the mismatch
+and shows a mapping form:
+
+```
+`SR No`     ✅ File A   ❌ missing: File B    Canonical name: [SR No      ]
+`Ticket ID` ✅ File B   ❌ missing: File A    Canonical name: [SR No      ]  ← user types same name
+```
+
+Type the same canonical name for both → they are renamed and treated as one column
+before grouping and merging. Leave names unchanged to keep them as separate columns.
+
+---
+
+## Data Type Cleaning
+
+Enabled by default (checkbox in Merge Settings). Applied automatically during merge:
+
+| Column type | What happens |
+|-------------|-------------|
+| Column name contains: `date`, `time`, `created`, `due`, `closed`, `updated`, etc. | Parsed to datetime using `pd.to_datetime` (dayfirst) — only if ≥50% of values parse successfully |
+| Column name contains: `city`, `town`, `region`, `zone`, `area`, `state`, `country` | Whitespace stripped + title-cased (`mumbai` → `Mumbai`) |
+| Any other string column | Whitespace stripped only |
+
+A report after the merge shows exactly which columns were changed and how many values parsed.
+
+---
+
+## Duplicate Audit
+
+After every merge with a dedup strategy, the app shows:
+- **Count** of rows removed
+- **Table** of every removed row, with a `Removed Row# (Excel)` column — the 1-based row
+  number in the combined pre-dedup dataset (row 2 = first data row, matching Excel's
+  header-on-row-1 convention)
+- **Download button** for the full audit as a CSV (`duplicate_audit.csv`)
 
 ---
 
@@ -72,32 +139,24 @@ Supports **incremental append** — if you ran a merge before, only new files ar
 Stacks all files row-by-row. No filtering. Every row from every file is included,
 including exact duplicates.
 
-**Use when:** Files cover completely different records with no expected overlap
-(e.g. different regions, different months with no carry-over).
+**Use when:** Files cover completely different records with no expected overlap.
 
 ---
 
-### 2 — Remove Exact Duplicates  ← Default for this use case
-
+### 2 — Remove Exact Duplicates
 Stacks all files, then removes rows where **every column has the exact same value**.
 
-**Default behaviour:** ALL columns must match for a row to be considered a duplicate.
-One column differing (even by a single character) means both rows are kept.
+**Optional:** Exclude specific columns from the duplicate check. For example: exclude
+"Service Request Owner" so the same pending call assigned to two different engineers
+is still treated as one record.
 
-**Optional:** You can select specific columns to *exclude from the duplicate check*.
-For example: exclude "Service Request Owner" so that the same pending call assigned to
-two different engineers is still treated as one record (the engineer name difference
-does not make it a new row).
-
-**Use when:** Two system exports (e.g. ERP + CRM) may have the same events but minor
-variations in non-key fields like assigned user, timestamps, or internal IDs.
+**Use when:** Two system exports may have the same events but minor field differences.
 
 ---
 
 ### 3 — Key Dedup: First File Wins
-When the same key value (e.g. SR Number, Employee ID, Invoice No.) appears in multiple
-files, the version from the **first-uploaded** file is kept. All unique keys from all
-files are included.
+When the same key value appears in multiple files, the version from the **first-uploaded**
+file is kept. All unique keys from all files are included.
 
 **Use when:** Your first file is the authoritative master source.
 
@@ -106,18 +165,15 @@ files are included.
 ### 4 — Key Dedup: Last File Wins
 Same as option 3 but the **last-uploaded** file's version wins for duplicate keys.
 
-**Use when:** Your newest file has the most up-to-date data (e.g. updated status,
-revised salary) and should overwrite older entries.
+**Use when:** Your newest file has the most up-to-date data.
 
 ---
 
 ### 5 — Smart Fill (Best of Both)
 For duplicate keys, assembles the output row by taking the **first non-empty value**
 for each column across all files. Fills gaps in one file with data from another.
-Upload your most authoritative file first.
 
-**Use when:** Two systems each export partial data for the same records
-(e.g. ERP has contract info, CRM has contact details). You want the most complete row.
+**Use when:** Two systems each export partial data for the same records.
 
 ---
 
@@ -125,8 +181,7 @@ Upload your most authoritative file first.
 Keeps **only** records whose key exists in every single uploaded file.
 Records unique to any one file are excluded.
 
-**Use when:** You need records confirmed across all sources — e.g. only calls that
-appear in both ERP and CRM.
+**Use when:** You need records confirmed across all sources.
 
 ---
 
@@ -136,95 +191,47 @@ When new files arrive in your folder over time, you do not need to re-merge ever
 The app tracks which files have already been processed via the **"Source File"** column
 in the merged output.
 
-**How it works:**
-1. Run a full merge (all files, any strategy). The output file gets a "Source File" column.
-2. Next week, new files arrive in the folder.
+1. Run a full merge (all files). The output gets a "Source File" column.
+2. New files arrive in the folder next week.
 3. Open the app → Folder Mode tab → point to the same folder.
 4. The app shows: "X files already processed, Y new files detected."
-5. Choose **"Append only new files"** → only the new files are read and stacked below the
-   existing merged output. The old data is untouched.
+5. Choose **"Append only new files"** — only new files are stacked below the existing data.
 6. The merged file is updated and saved back to the same folder.
 
-**Requirement:** The merged output must have a "Source File" column (the app adds this
-automatically when "Add Source File column" is checked — which is the default).
+**Requirement:** "Add Source File column" must be checked (it is by default).
 
 ---
 
-## Pending Calls Files — Specific Script (merge_files.py)
+## Pending Calls — Specific Script (`merge_files.py`)
 
-For the specific set of ZOHO/ERP Pending Call files in this folder, a dedicated script
-is provided: **`merge_files.py`**
+For the specific set of ZOHO/ERP Pending Call files in this folder, a dedicated
+command-line script is also provided.
 
-Run it from the terminal:
+Run from terminal:
 ```
 python merge_files.py
 ```
 
-**What it does differently from the general app:**
-
 | Feature | General App | merge_files.py |
 |---------|-------------|----------------|
-| Duplicate logic | All columns same (user-configurable exclusions) | All common columns same, explicitly ignores "Service Request Owner" |
-| April 25th | Choose your strategy | Auto-handled: ZOHO file (34 cols) as base, ERP file (30 cols) supplementary |
-| Output | Download via browser | Saves directly to folder as MERGED_All_Pending_Calls.xlsx |
-| Column normalization | Not needed (general) | Built-in: normalizes column name variants across files |
-
-**Why the different duplicate logic for April 25th:**
-The ERP file has 30 columns and the ZOHO file has 34 columns (4 extra contract-related
-columns). When both files contain the same service call, the ERP row will have empty
-contract columns. The script checks only the 29 columns that exist in both files
-(excluding Service Request Owner), so it correctly identifies and removes 239 genuine
-duplicates while keeping the ZOHO version which has richer data.
-
-**April 25th result:** 629 (ZOHO) + 647 (ERP) − 239 duplicates = **1,037 unique records**
+| Duplicate logic | User-configurable | Hardcoded: ignores "Service Request Owner" |
+| ERP file handling | Separate group auto-detected | Explicitly labelled `_ERP` sheets |
+| Output | Download via browser | Saves directly to folder |
+| Column normalization | Column Alignment UI | Built-in alias map |
 
 ---
 
-## Cross-File Duplicate Analysis (Pending Calls)
+## SQL Server Integration (`save_to_sql.py`)
 
-These files are **daily snapshots** of all open/pending service calls. A call that
-remains unresolved will appear in every daily file until it is closed.
-
-**Key findings from the duplicate check:**
-
-| What it means | Count |
-|---|---|
-| Calls pending AND unchanged across multiple days | Appear as exact duplicate rows in multiple files |
-| Calls pending but with status/data changes | Same SR Number, different row content — these are NOT duplicates |
-
-**Exact identical rows found between files (sample):**
-
-| File pair | Identical rows | Meaning |
-|-----------|---------------|---------|
-| 23-Apr-A × 23-Apr-B | 285 | Same day, same calls in both reports |
-| 28-Apr × 29-Apr | 422 | 422 calls were pending with no change overnight |
-| 24-Apr × 25-Apr-ZOHO | 357 | 357 calls were stuck from Apr 24 to Apr 25 |
-| 28-Apr × 30-Apr | 276 | 276 calls unchanged across 2 days |
-
-**This is normal for daily snapshot reports.** The `merge_files.py` script does NOT
-remove these cross-date duplicates by design — each daily row is a valid data point
-showing the call was still pending on that date. If you want a single-row-per-call
-view showing the latest status, use the app with **Option 4 (Last File Wins)** on
-SR Number as the key.
-
----
-
-## SQL Server Integration (Personal Use)
-
-To push the merged file into SQL Server, use the included `save_to_sql.py` script.
+Push any merged Excel/CSV file into a SQL Server table.
 
 **One-time setup:**
 ```
 pip install sqlalchemy pyodbc
 ```
 
-**Configure the script** by editing the top section of `save_to_sql.py`:
-- Server name
-- Database name
-- Table name
-- Input file path
-
-**Run:**
+Edit the configuration block at the top of `save_to_sql.py` (server name, database,
+table name, input file path), then run:
 ```
 python save_to_sql.py
 ```
@@ -236,14 +243,17 @@ Alternatively, use the SSMS Import/Export Wizard:
 
 ## Files in This Package
 
-| File | Purpose |
-|------|---------|
-| `file_merger_app.py` | Main Streamlit web application |
-| `merge_files.py` | Specific script for the Pending Calls Excel files |
-| `save_to_sql.py` | Push merged data to SQL Server (personal use) |
-| `requirements.txt` | Python package dependencies |
-| `run_app.bat` | Windows launcher — double-click to start the app |
-| `README.md` | This file |
+| File | Purpose | In git? |
+|------|---------|---------|
+| `file_merger_app.py` | Main Streamlit web application | ✅ Yes |
+| `requirements.txt` | Python package dependencies | ✅ Yes |
+| `run_app.bat` | Windows launcher — double-click to start | ✅ Yes |
+| `README.md` | This file | ✅ Yes |
+| `merge_files.py` | Specific script for Pending Calls files (has personal paths) | ❌ Gitignored |
+| `save_to_sql.py` | Push merged data to SQL Server (has personal config) | ❌ Gitignored |
+| `Raw Files/` | Source Excel files | ❌ Gitignored |
+| `MERGED_*.xlsx` | Generated output files | ❌ Gitignored |
+| `__pycache__/` | Python bytecode cache | ❌ Gitignored |
 
 ---
 
@@ -254,6 +264,9 @@ pandas >= 2.0
 openpyxl >= 3.1
 xlrd >= 2.0
 streamlit >= 1.32
+matplotlib >= 3.7
+matplotlib-venn >= 0.11
+plotly >= 5.0        ← for interactive dashboard charts and HTML export
 ```
 
 For SQL Server integration additionally:

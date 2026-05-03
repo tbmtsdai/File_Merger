@@ -4,3 +4,4 @@ xlrd>=2.0.1
 streamlit>=1.32.0
 matplotlib>=3.7.0
 matplotlib-venn>=0.11.0
+plotly>=5.0.0
