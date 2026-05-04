@@ -324,6 +324,7 @@ def group_sheets_partial(file_sheet_dfs, threshold=0.85):
 STRATEGIES = {
     "1 — Simple Append": dict(
         fn=do_append, needs_key=False, allows_excl=False,
+        merge_all_groups=True,   # ignore column-structure grouping — stack everything
         icon="➕", badge="badge-blue", badge_lbl="No key needed",
         head="Stack all rows as-is. Every row kept, including exact duplicates.",
         detail="No filtering at all. Use when files cover completely different records.",
@@ -1090,6 +1091,17 @@ with tab_merge:
         else:
             groups = group_sheets(mapped_triples)
             group_label = f"### Step 3 — Sheet Groups  ({len(groups)} detected)"
+
+        # Simple Append: collapse all column-groups into one so every file lands
+        # in a single output sheet (missing columns get NaN, nothing is dropped)
+        if cfg.get("merge_all_groups") and len(groups) > 1:
+            _all_entries = [e for _, entries in groups for e in entries]
+            _union_cols  = frozenset(c for _, _, df in _all_entries
+                                     for c in df.columns if c not in TRACKING_COLS)
+            groups     = [(_union_cols, _all_entries)]
+            group_label = (f"### Step 3 — Sheet Groups  "
+                           f"(1 group — all {len(_all_entries)} sheet(s) stacked into one output)")
+
         st.markdown(group_label)
         for i, (cols_key, entries) in enumerate(groups):
             file_names  = sorted({e[0] for e in entries})
@@ -1282,8 +1294,12 @@ with tab_folder:
         output_path    = os.path.join(folder_path, output_name)
         all_data_files = sorted([
             f for f in os.listdir(folder_path)
-            if f.lower().endswith((".csv", ".xlsx", ".xls")) and f != output_name
+            if f.lower().endswith((".csv", ".xlsx", ".xls"))
+            and f.lower() != output_name.lower()   # case-insensitive exclusion
         ])
+
+        st.caption(f"Looking for existing output at: `{output_path}`  "
+                   f"{'✅ found' if os.path.exists(output_path) else '— not found yet'}")
 
         if not all_data_files:
             st.warning("No CSV or Excel files found in this folder.")
@@ -1411,6 +1427,13 @@ with tab_folder:
                                     groups = (group_sheets_partial(all_triples, overlap_pct)
                                               if cfg.get("partial_group")
                                               else group_sheets(all_triples))
+                                    # Simple Append: collapse all groups → one output sheet
+                                    if cfg.get("merge_all_groups") and len(groups) > 1:
+                                        _ae = [e for _, entries in groups for e in entries]
+                                        _uc = frozenset(
+                                            c for _, _, df in _ae
+                                            for c in df.columns if c not in TRACKING_COLS)
+                                        groups = [(_uc, _ae)]
                                     new_output_sheets = {}
                                     all_audits        = []
                                     total_in = total_out = 0
