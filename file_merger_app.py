@@ -1254,9 +1254,7 @@ with tab_folder:
 
     f_col, o_col = st.columns([3, 2])
     with f_col:
-        _default_path = st.session_state.get(
-            "_folder_path_input",
-            r"C:\Users\Kshitij Buch\OneDrive\Documents\TBM 2026 Onwards\Pending Calls\Raw Files")
+        _default_path = st.session_state.get("_folder_path_input", "")
         folder_path = st.text_input(
             "Folder path (type or use Browse button above)",
             value=_default_path,
