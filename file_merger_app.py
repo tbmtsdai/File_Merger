@@ -1655,7 +1655,14 @@ with tab_folder:
                 value=_default_path,
                 key="_folder_path_text")
         with o_col:
-            output_name = st.text_input("Output filename", value="MERGED_output.xlsx")
+            output_name = st.text_input(
+                "Output filename",
+                value="MERGED_output.xlsx",
+                help="💡 Use .csv extension for a smaller file — CSV is typically "
+                     "3–5× smaller than Excel because it stores only raw data "
+                     "with no formatting, styles, or workbook metadata.")
+            st.caption("📦 Tip: rename to `MERGED_output.csv` to reduce file size "
+                       "(select CSV in Download Format below too).")
 
         # Sync typed value back to session state so Browse and typing both work
         st.session_state["_folder_path_input"] = folder_path
@@ -1685,12 +1692,20 @@ with tab_folder:
             )
         else:
             output_path    = os.path.join(folder_path, output_name)
+            # Also check the alternate-extension variant so switching
+            # between Excel and CSV doesn't lose the existing-output detection.
+            _base_name     = os.path.splitext(output_name)[0]
+            _alt_name      = (_base_name + ".csv"  if output_name.lower().endswith(".xlsx")
+                              else _base_name + ".xlsx")
+            _output_names  = {output_name.lower(), _alt_name.lower()}
             all_data_files = sorted([
                 f for f in os.listdir(folder_path)
                 if f.lower().endswith((".csv", ".xlsx", ".xls"))
-                and f.lower() != output_name.lower()   # case-insensitive exclusion
+                and f.lower() not in _output_names   # exclude both format variants
             ])
 
+            _existing_path = (output_path if os.path.exists(output_path)
+                              else os.path.join(folder_path, _alt_name))
             st.caption(f"Looking for existing output at: `{output_path}`  "
                        f"{'✅ found' if os.path.exists(output_path) else '— not found yet'}")
 
@@ -1700,11 +1715,14 @@ with tab_folder:
                 # Detect already-processed files from existing output
                 already_done       = set()
                 existing_row_count = 0
-                has_existing       = os.path.exists(output_path)
+                has_existing       = (os.path.exists(output_path) or
+                                      os.path.exists(_existing_path))
                 ex_sheets          = {}
                 if has_existing:
+                    _read_path = (output_path if os.path.exists(output_path)
+                                  else _existing_path)
                     try:
-                        ex_sheets = read_from_path(output_path)
+                        ex_sheets = read_from_path(_read_path)
                         for df in ex_sheets.values():
                             if "Source File" in df.columns:
                                 already_done.update(df["Source File"].dropna().unique())
@@ -1896,10 +1914,26 @@ with tab_folder:
                                                          hide_index=True)
 
                                     try:
-                                        xl_bytes = to_excel_bytes(final_sheets)
-                                        with open(output_path, "wb") as fh:
-                                            fh.write(xl_bytes)
-                                        st.info(f"Saved: `{output_path}`")
+                                        if out_fmt.startswith("Excel"):
+                                            _save_bytes = to_excel_bytes(final_sheets)
+                                            _save_name  = (output_name
+                                                           if output_name.lower().endswith(".xlsx")
+                                                           else _base_name + ".xlsx")
+                                        else:
+                                            _first_df   = next(iter(final_sheets.values()))
+                                            _save_bytes = to_csv_bytes(_first_df)
+                                            _save_name  = (output_name
+                                                           if output_name.lower().endswith(".csv")
+                                                           else _base_name + ".csv")
+                                        _save_path = os.path.join(folder_path, _save_name)
+                                        with open(_save_path, "wb") as fh:
+                                            fh.write(_save_bytes)
+                                        _sz_kb = len(_save_bytes) / 1024
+                                        _sz_str = (f"{_sz_kb/1024:.2f} MB"
+                                                   if _sz_kb > 1024
+                                                   else f"{_sz_kb:.0f} KB")
+                                        st.info(f"✅ Saved: `{_save_path}`  "
+                                                f"({_sz_str})")
                                     except Exception as e:
                                         st.warning(f"Could not save to folder: {e}")
 
