@@ -770,6 +770,22 @@ def render_settings(all_cols, tab_key, mapped_triples=None):
                            ["Excel (.xlsx) — multi-sheet", "CSV (.csv) — first sheet only"],
                            key=f"fmt_{tab_key}", horizontal=True)
 
+    # ── Drop columns from output ──────────────────────────────────────────
+    with st.expander("🗑️ Drop columns from output (optional)", expanded=False):
+        st.caption(
+            "Select any columns you want removed from the merged result before "
+            "download — e.g. internal IDs, redundant codes, or fields you never use. "
+            "The original source files are not affected.")
+        drop_cols = st.multiselect(
+            "Columns to drop",
+            sorted(all_cols),
+            key=f"drop_{tab_key}",
+            help="Dropped columns are removed from every sheet in the output.")
+        if drop_cols:
+            st.warning(
+                f"**{len(drop_cols)} column(s) will be removed from the output:** "
+                + ", ".join(f"`{c}`" for c in drop_cols))
+
     # ── 5-row output preview ───────────────────────────────────────────────
     # Only auto-runs once you've picked an operation + (for joins) an explicit
     # key column. We cap inputs to 10 rows × 3 sheets so even a many-to-many
@@ -805,7 +821,7 @@ def render_settings(all_cols, tab_key, mapped_triples=None):
                                 f"identifier in your files. Try a column with "
                                 f"unique values per row, or run the full merge "
                                 f"to see the real result.")
-                            return cfg, key_col, excl_cols, clean_types, add_src, out_fmt
+                            return cfg, key_col, excl_cols, clean_types, add_src, out_fmt, drop_cols
 
                     preview, _ = cfg["fn"](
                         sample_dfs,
@@ -827,7 +843,7 @@ def render_settings(all_cols, tab_key, mapped_triples=None):
                 except Exception as e:
                     st.warning(f"Preview unavailable: {type(e).__name__}: {e}")
 
-    return cfg, key_col, excl_cols, clean_types, add_src, out_fmt
+    return cfg, key_col, excl_cols, clean_types, add_src, out_fmt, drop_cols
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1382,7 +1398,7 @@ with tab_upload:
                     for _k in list(st.session_state.keys()):
                         if _k.startswith(("col_renames_", "cmap_", "strat_",
                                           "key_", "excl_", "clean_", "src_",
-                                          "fmt_", "fc_")):
+                                          "fmt_", "fc_", "drop_")):
                             st.session_state.pop(_k, None)
                     # Rotate the uploader key — forces Streamlit to render a
                     # completely fresh file_uploader widget (the only reliable
@@ -1470,7 +1486,7 @@ with tab_merge:
         st.markdown("### Step 2 — Merge Settings")
         all_cols_flat = sorted(
             set(c for _, _, df in mapped_triples for c in df.columns) - TRACKING_COLS)
-        cfg, key_col, excl_cols, clean_types, add_src, out_fmt = \
+        cfg, key_col, excl_cols, clean_types, add_src, out_fmt, drop_cols = \
             render_settings(all_cols_flat, "upload", mapped_triples=mapped_triples)
 
         st.divider()
@@ -1539,6 +1555,11 @@ with tab_merge:
                             st.warning(f"Group {i+1} merge failed: {e}")
                             result = pd.concat(dfs, ignore_index=True)
                             audit  = pd.DataFrame()
+
+                        # Drop user-selected columns from the result
+                        if drop_cols:
+                            result = result.drop(
+                                columns=[c for c in drop_cols if c in result.columns])
 
                         n_in       = sum(len(d) for d in dfs)
                         total_in  += n_in
@@ -1833,7 +1854,7 @@ if HAS_TKINTER:
                             all_folder_cols = sorted(
                                 set().union(*[set(e[2].columns)
                                               for e in mapped_triples]) - TRACKING_COLS)
-                            cfg, key_col, excl_cols, clean_types, add_src, out_fmt = \
+                            cfg, key_col, excl_cols, clean_types, add_src, out_fmt, drop_cols = \
                                 render_settings(all_folder_cols, "folder",
                                                 mapped_triples=mapped_triples)
                             st.divider()
@@ -1887,6 +1908,13 @@ if HAS_TKINTER:
                                                 st.warning(f"Merge failed for '{out_name}': {e}")
                                                 result = pd.concat(dfs, ignore_index=True)
                                                 audit  = pd.DataFrame()
+
+                                            # Drop user-selected columns
+                                            if drop_cols:
+                                                result = result.drop(
+                                                    columns=[c for c in drop_cols
+                                                             if c in result.columns])
+
                                             n_in       = sum(len(d) for d in dfs)
                                             total_in  += n_in
                                             total_out += len(result)
