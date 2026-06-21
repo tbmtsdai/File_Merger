@@ -3,6 +3,12 @@
 > **Purpose:** drop this into a new Claude session and resume work with zero ramp-up.
 > Generated 2026-05-11. Working directory and HEAD reflect that date.
 
+> **🔴 OPEN ACTION ITEM (office laptop):** 2 commits exist only on this
+> personal-OneDrive copy / its `personal` GitHub mirror — they have NOT
+> reached the office `origin` repo yet. See Section 1 for the exact commits
+> and the `git push origin master` command needed. Do this before deleting
+> the personal OneDrive folder.
+
 ---
 
 ## 1. Project
@@ -32,8 +38,36 @@ The URL slug `kshitijbuch-file_merger` in the logs is just the deployer's
 username — misleading; it does **not** indicate which repo is being deployed.
 
 A secondary mirror exists at `github.com/kshitijbuch/File_Merger` (personal
-account). It was sync'd as a backup on 2026-05-11. **Cloud does not deploy
-from it.** Don't waste time pushing to it unless explicitly asked.
+account, remote name `personal`). It was sync'd as a backup on 2026-05-11.
+**Cloud does not deploy from it.** Don't waste time pushing to it unless
+explicitly asked.
+
+> ### ⚠️ ACTION REQUIRED ON OFFICE LAPTOP — DO THIS FIRST
+> As of 2026-05-11, **`origin` (the office repo, the one cloud actually
+> deploys from) is 2 commits behind** `personal`. These 2 commits exist
+> ONLY in this personal-OneDrive working copy and on the `personal` mirror —
+> they have **never reached `origin`**:
+> ```
+> c7b3161  Update Claude_Context.md — cloud confirmed deploying from office tbmtsdai repo
+> 78328a0  Add Claude_Context.md handoff doc for cross-session continuity
+> ```
+> Both are just this handoff-doc file — **no app code is at risk** — but push
+> them so `origin` has the full history before this personal OneDrive folder
+> is deleted. From the office laptop / wherever the `github-company` SSH
+> alias resolves, run:
+> ```bash
+> cd "<office OneDrive path to this project>"
+> git fetch origin
+> git log origin/master..HEAD          # confirm these 2 commits are the only diff
+> git push origin master
+> ```
+> If the office laptop's working copy is a **different clone** (not this
+> exact personal-OneDrive folder), you'll need to either (a) re-create
+> `Claude_Context.md` there manually using this file as the source, or
+> (b) add this personal-OneDrive path as a remote on the office clone and
+> pull from it once, e.g. `git remote add winhome <path-or-share>` then
+> `git fetch winhome && git merge winhome/master`.
+> **Once confirmed pushed, this entire warning block can be deleted.**
 
 **Pushing from this Windows machine fails:** `origin` uses SSH alias
 `github-company` which is not in this machine's `~/.ssh/config`. Push from
