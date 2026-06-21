@@ -22,13 +22,23 @@ C:\Users\Kshitij Buch\OneDrive\Documents\TBM 2026 Onwards\Pending Calls
 https://filemerger-kb.streamlit.app
 ```
 
-**GitHub remote** (from `git remote -v` — note: org is `tbmtsdai`, not user account):
+**GitHub remote — confirmed via verification on 2026-05-11:**
 ```
-git@github-company:tbmtsdai/File_Merger.git
+origin → git@github-company:tbmtsdai/File_Merger.git   ← LIVE source (cloud deploys from here)
 ```
-The Streamlit Cloud URL slug `kshitijbuch-file_merger` suggests the cloud app
-may track a different fork (`github.com/kshitijbuch/File_Merger`) — verify in
-Streamlit Cloud dashboard if push doesn't auto-deploy.
+The Streamlit Cloud app at `https://filemerger-kb.streamlit.app` is wired to
+the **office `tbmtsdai/File_Merger` repo**, not the user's personal account.
+The URL slug `kshitijbuch-file_merger` in the logs is just the deployer's
+username — misleading; it does **not** indicate which repo is being deployed.
+
+A secondary mirror exists at `github.com/kshitijbuch/File_Merger` (personal
+account). It was sync'd as a backup on 2026-05-11. **Cloud does not deploy
+from it.** Don't waste time pushing to it unless explicitly asked.
+
+**Pushing from this Windows machine fails:** `origin` uses SSH alias
+`github-company` which is not in this machine's `~/.ssh/config`. Push from
+the office machine (where the alias is configured) or fix the SSH config
+locally — see Section 6, Next Step 1.
 
 ---
 
@@ -134,43 +144,39 @@ Pending Calls\
 
 ---
 
-## 5. Active blocker — Streamlit Cloud "Oh no" page
+## 5. Active blocker — RESOLVED (2026-05-11)
 
-**Symptom:** `https://filemerger-kb.streamlit.app` shows the generic
-"Oh no. Error running app" page. Refreshing doesn't help.
+**Previous symptom:** `https://filemerger-kb.streamlit.app` was showing the
+generic "Oh no. Error running app" page in the user's normal browser tab.
 
-**Root cause (confirmed from logs at `2026-05-11T08:17:49Z`):**
-- App was crashing repeatedly on Left/Right Join because Pending Calls files have
-  many duplicate values per column (e.g. same `City` across many rows). The auto-picked
-  default key triggered a many-to-many cartesian product → OOM-killed the cloud container.
-- Fix `9222f07` (key column placeholder + 10-row × 3-sheet sample cap + 50k row pre-check) was
-  deployed at `[07:07:35]`. Log shows zero errors after that timestamp — **the new code is fine**.
-- BUT: 70+ minutes of complete log silence after the deploy strongly suggests the
-  Streamlit Cloud container is in a "deployed but never woke up" state.
+**Actual root cause:** **Browser cache.** The cloud deployment was healthy
+and serving the latest code (Deduplicate tab visible in incognito and via
+share.streamlit.io). The user's normal browser had cached the redacted "Oh no"
+response from an earlier real crash (since fixed by `9222f07`) and was never
+re-fetching from the server.
 
-**Resolution path (in order — try each before escalating to the next):**
+**Verification chain:**
+- Yesterday: Deduplicate tab visible via share.streamlit.io and direct app URL → deploy was fine.
+- Today: Deduplicate tab also visible in incognito → confirmed it's a per-session cache issue.
+- Conclusion: there was never a deployment problem. Only browser caching.
 
-1. **Manual reboot from Streamlit Cloud dashboard** (most likely fix):
-   - Go to https://share.streamlit.io/
-   - Log in with the GitHub account that owns the deployment
-   - Find `file_merger` → click ⋮ menu → **Reboot app**
-   - Wait 60–90 seconds for cold start
-   - Open `https://filemerger-kb.streamlit.app` in an **incognito window**
-2. **If reboot button missing or doesn't fix it:** push any trivial commit to
-   force a fresh deploy. The deprecation cleanup in Next Step #1 below is a
-   good candidate — meaningful change + forces redeploy.
-3. **Nuclear option:** delete the Streamlit Cloud deployment and re-create it
-   pointing at the same GitHub repo.
+**If this re-occurs in future:** tell the user to either
+(a) hard-reload with `Ctrl + Shift + R` / `Ctrl + F5`, or
+(b) clear site data: padlock icon → Site settings → Clear data, or
+(c) test in an incognito window first to rule out cache before assuming server problem.
+
+**Historical fixes that DID happen** and shipped in earlier commits this session:
+- `9222f07` — key column placeholder + sample-size caps prevent OOM cartesian explosions on joins
+- `b7b7f30` — defensive `clean_dtypes` + `_dedup_columns` prevent AttributeError on duplicate column names
+- `0f10c1a` — Source File column preserved when re-merging a previous output
+
+These are all live on the office repo and currently deployed to cloud.
 
 ---
 
 ## 6. Exact next steps (numbered, in priority order)
 
-1. **Unblock the cloud deployment.** Try the manual reboot (Section 5, step 1).
-   If that fails, push a forcing commit (Section 6, step 2). Confirm with the user
-   by opening the URL in incognito.
-
-2. **Clean up `use_container_width` deprecations.** The cloud logs have ~hundreds
+1. **Clean up `use_container_width` deprecations.** The cloud logs have ~hundreds
    of warnings like `Please replace use_container_width with width`. Streamlit
    said this becomes an error after 2025-12-31 — today is 2026-05-11, 5 months past.
    - Find all occurrences: `Grep "use_container_width" file_merger_app.py`
@@ -178,8 +184,10 @@ Pending Calls\
    - Replace `use_container_width=False` → `width="content"`
    - Bump `requirements.txt` to `streamlit>=1.46` (width param introduced in 1.46)
    - Test locally with `run_app.bat` before pushing.
+   - Push from the **office machine** (where `github-company` SSH alias works);
+     pushes from this Windows PC fail with `Could not resolve hostname github-company`.
 
-3. **Address the `FutureWarning` about `pd.concat` with empty/all-NA entries.**
+2. **Address the `FutureWarning` about `pd.concat` with empty/all-NA entries.**
    Line 243 (inside `do_union_distinct`):
    ```python
    combined = pd.concat(dfs, ignore_index=True, join="outer")
@@ -190,17 +198,28 @@ Pending Calls\
    if not dfs: return pd.DataFrame(), pd.DataFrame()
    ```
 
-4. **(Optional) Switch date parsing away from `pd.to_datetime(dayfirst=True)`** —
+3. **(Optional) Switch date parsing away from `pd.to_datetime(dayfirst=True)`** —
    the log shows `UserWarning: Could not infer format, falling back to dateutil`.
    Currently in `clean_dtypes` at line ~118. If files have mixed date formats,
    parsing is slow. Consider explicit format detection per column or letting
    pandas use ISO format only.
 
-5. **(Optional) Verify the Deduplicate tab (commit `f3cf588`)** works end-to-end —
+4. **(Optional) Verify the Deduplicate tab (commit `f3cf588`)** works end-to-end —
    it was added in a session I don't have memory of. Spot-check that:
    - It correctly handles files with `Source File` already present
    - It uses `_dedup_columns()` like the other merge paths
    - Excluding columns from the dedup check works
+
+5. **(Optional) Fix local SSH so pushes from this Windows PC work.** Add to
+   `~/.ssh/config`:
+   ```
+   Host github-company
+       HostName github.com
+       User git
+       IdentityFile ~/.ssh/id_rsa
+   ```
+   After this, plain `git push` from this machine will reach the office repo
+   without needing to log in to the office laptop.
 
 ---
 
