@@ -1415,10 +1415,76 @@ def render_dedup_tab():
             f"Compared on {len(check_cols)} column(s): {cols_used_str}"
             f"{cols_excl_str}")
 
+        # ── Match each removed row to the row it will fold into ───────────
+        # Every duplicate row is identical (on the compared columns) to one
+        # "kept" row — the First or Last of its group per the setting above.
+        # We surface WHICH row that is, plus its Source File, so you can tell
+        # whether a duplicate came from the *same* dated file uploaded twice
+        # or from a genuinely repeated record across two different files.
+        pos      = pd.Series(range(len(df_raw)))               # 0-based positions
+        gid      = df_cmp.groupby(check_cols, dropna=False, sort=False).ngroup()
+        rep_pos  = pos.groupby(gid.values).transform(keep.lower()).astype(int)
+
+        dup_positions   = pos[dup_mask.values].tolist()
+        match_positions = rep_pos[dup_mask.values].tolist()
+
+        # Locate a "Source File" column if the file carries one (merged output).
+        src_col = next(
+            (c for c in df_raw.columns
+             if isinstance(c, str) and c.strip().lower() == "source file"),
+            None)
+
+        info = pd.DataFrame(index=df_raw.index[dup_mask])
+        info.insert(0, "Row # in file",      [p + 1 for p in dup_positions])
+        info.insert(1, "Duplicate of row #", [p + 1 for p in match_positions])
+
+        if src_col:
+            this_src  = [df_raw.iat[p, df_raw.columns.get_loc(src_col)]
+                         for p in dup_positions]
+            match_src = [df_raw.iat[p, df_raw.columns.get_loc(src_col)]
+                         for p in match_positions]
+            same_flag = [a == b for a, b in zip(this_src, match_src)]
+            info["This row's Source File"]        = this_src
+            info["Matched (kept) row's Source File"] = match_src
+            info["Same file?"] = [
+                "✅ same file" if s else "⚠️ different file" for s in same_flag]
+
+            same_n  = sum(same_flag)
+            cross_n = n_dups - same_n
+            st.markdown(
+                f"- 🟢 **{same_n:,}** duplicate(s) match a row from the "
+                f"**same** source file (the same file was likely uploaded "
+                f"more than once — safe to remove).\n"
+                f"- 🟠 **{cross_n:,}** duplicate(s) match a row from a "
+                f"**different** source file (a genuinely repeated record "
+                f"across two files — review before removing).")
+
+            pair_summary = (
+                pd.DataFrame({
+                    "Duplicate row's file":       this_src,
+                    "Matched (kept) row's file":  match_src})
+                .groupby(["Duplicate row's file", "Matched (kept) row's file"],
+                         dropna=False)
+                .size().reset_index(name="Duplicate rows")
+                .sort_values("Duplicate rows", ascending=False)
+                .reset_index(drop=True))
+            with st.expander(
+                    "📄 Which files do the duplicates come from? "
+                    f"({len(pair_summary)} file pair(s))",
+                    expanded=True):
+                st.dataframe(pair_summary,
+                             use_container_width=True, hide_index=True)
+        else:
+            st.caption(
+                "ℹ️ This file has no *Source File* column, so per-file origin "
+                "can't be shown — only the matching row number is displayed. "
+                "(Source File is added when you merge files in the Merge tab.)")
+
+        preview_df = pd.concat([info, df_raw[dup_mask]], axis=1)
         with st.expander(
                 f"👁️ Preview rows that will be removed ({n_dups:,})",
                 expanded=False):
-            st.dataframe(df_raw[dup_mask].reset_index(drop=True),
+            st.dataframe(preview_df.reset_index(drop=True),
                          use_container_width=True, height=300)
 
     df_result = df_raw[~dup_mask].reset_index(drop=True)
