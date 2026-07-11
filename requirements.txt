@@ -1,8 +1,13 @@
-pandas>=2.0.0
-openpyxl>=3.1.0
-XlsxWriter>=3.1.0
-xlrd>=2.0.1
-streamlit>=1.32.0
-matplotlib>=3.7.0
-matplotlib-venn>=0.11.0
-plotly>=5.0.0
+# Upper bounds pin dependencies to a stable band. Without them,
+# Streamlit Cloud's `uv` grabs the very latest of everything (e.g. pandas 3.0
+# on Python 3.14 with numpy 2.5 + pyarrow 25), which segfaulted at merge time
+# on 2026-07-11. Keep the ceilings until the next intentional upgrade.
+pandas>=2.2.0,<3.0.0
+numpy>=1.26,<2.3
+openpyxl>=3.1.0,<4.0
+XlsxWriter>=3.1.0,<4.0
+xlrd>=2.0.1,<3.0
+streamlit>=1.32.0,<2.0
+matplotlib>=3.7.0,<4.0
+matplotlib-venn>=0.11.0,<2.0
+plotly>=5.0.0,<7.0
