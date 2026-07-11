@@ -5,6 +5,9 @@
 /Updates/
 MERGED_*
 
+# Local notes & analysis (Power BI, drafts) — kept locally, never pushed
+/docs/
+
 # Scripts that contain personal server config / private logic
 merge_files.py
 save_to_sql.py
