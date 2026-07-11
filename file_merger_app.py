@@ -585,9 +585,26 @@ def group_sheets(file_sheet_dfs):
     return sorted(buckets.items(), key=lambda x: -len(x[0]))
 
 
+def _make_excel_writer(buf):
+    """Return an ExcelWriter, preferring XlsxWriter over openpyxl.
+
+    openpyxl holds the *entire* workbook in RAM as Python Cell objects before
+    writing — for large merges (tens of thousands of rows) that transient
+    spike can exceed the ~1 GB Streamlit Cloud limit and get the container
+    OOM-killed. XlsxWriter streams each worksheet to a temp file and keeps
+    only a compact shared-string table in memory, so peak RAM stays low and
+    the output file is smaller and better-compressed. Fall back to openpyxl
+    only if XlsxWriter isn't installed.
+    """
+    try:
+        return pd.ExcelWriter(buf, engine="xlsxwriter")
+    except (ImportError, ModuleNotFoundError, ValueError):
+        return pd.ExcelWriter(buf, engine="openpyxl")
+
+
 def to_excel_bytes(sheet_dict):
     buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as w:
+    with _make_excel_writer(buf) as w:
         for name, df in sheet_dict.items():
             safe = name[:31].translate(str.maketrans(r'\/[]*?:', '_______'))
             df.to_excel(w, sheet_name=safe, index=False)
@@ -1419,14 +1436,10 @@ def render_dedup_tab():
         f"{', ' + str(n_dups) + ' removed' if n_dups else ', no change'})")
 
     if dl_fmt.startswith("Excel"):
-        _buf = io.BytesIO()
-        with pd.ExcelWriter(_buf, engine="openpyxl") as _w:
-            df_result.to_excel(
-                _w, index=False,
-                sheet_name=sheet_used if sheet_used else "Deduplicated")
+        _xlsx = to_excel_bytes({(sheet_used or "Deduplicated"): df_result})
         st.download_button(
             btn_label,
-            data=_buf.getvalue(),
+            data=_xlsx,
             file_name=f"{base}_deduped.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary",
