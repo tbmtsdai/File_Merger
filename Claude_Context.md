@@ -1,13 +1,16 @@
 # Claude_Context.md — DataMerge Studio handoff
 
-> **Purpose:** drop this into a new Claude session and resume work with zero ramp-up.
-> Generated 2026-05-11. Working directory and HEAD reflect that date.
+> **⚠️ 2026-07-11 UPDATE — READ `CLAUDE.md` FIRST.** The repo has since moved
+> OUT of OneDrive to `C:\Users\k.buch\Documents\file merger and join app`, all
+> commits are pushed to `origin`, and the live cloud URL is now
+> `https://tbmfilemergejoin.streamlit.app`. `CLAUDE.md` (auto-loaded) is the
+> current source of truth. Sections below on **paths, git state, remotes,
+> "action items", and blockers are HISTORICAL (as of 2026-05-11)** and may be
+> stale — but the **architecture, design decisions, and code snippets
+> (Sections 3, 7, 9) remain accurate and useful.**
 
-> **🔴 OPEN ACTION ITEM (office laptop):** 2 commits exist only on this
-> personal-OneDrive copy / its `personal` GitHub mirror — they have NOT
-> reached the office `origin` repo yet. See Section 1 for the exact commits
-> and the `git push origin master` command needed. Do this before deleting
-> the personal OneDrive folder.
+> **Purpose:** detailed architecture reference. For a quick current summary,
+> see `CLAUDE.md`.
 
 ---
 
