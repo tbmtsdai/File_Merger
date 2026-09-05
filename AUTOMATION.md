@@ -66,8 +66,10 @@ Each run, in order:
    - Attachment count is **exactly 1** — filters out the evening mail that
      has 2 attachments (Excel + PPT).
 3. **Earliest wins** — of the qualifying mails, the earliest one is used.
-4. **Attachment saved** as `Raw Files\ZOHO_Pending_Calls_YYYY-MM-DD.xlsx`.
-   `.xls` attachments are converted to `.xlsx` on save.
+4. **Attachment saved as-is** under the sender's original filename in
+   `Raw Files\` (e.g. `ERP Pending Calls as on 07-Sep-2026.xls`).
+   No renaming, no format conversion — the folder view stays identical
+   to your manual practice, and the script creates no extra files.
 5. **Column mapping applied** from `Raw Files\column_map.json`.
 6. **Union onto `merged_output_auto.xlsx`** using the exact same
    Union All + clean-dtypes + XlsxWriter code path the app uses.

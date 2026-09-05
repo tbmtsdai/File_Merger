@@ -8,7 +8,10 @@ Runs hourly Mon-Sat 08:00-12:00 (see install_scheduled_task.ps1). Each run:
     2. Outlook COM scan    — walk today's Inbox, keep mails whose subject
                              contains "Pending Call" (case-insensitive) AND
                              that carry exactly ONE attachment. Pick earliest.
-    3. Save attachment     — Raw Files\\ZOHO_Pending_Calls_YYYY-MM-DD.xlsx.
+    3. Save attachment     — Raw Files\\<sender's original filename>. No
+                             renaming, no conversion. Matches the user's
+                             existing manual practice, so the folder view
+                             stays visually identical.
     4. Apply column_map    — abort with a toast if any column of the new file
                              is unknown; user teaches it in the Streamlit app
                              and tomorrow's run succeeds.
@@ -19,6 +22,7 @@ Runs hourly Mon-Sat 08:00-12:00 (see install_scheduled_task.ps1). Each run:
     7. Notify + log        — winotify toast, rolling log at Raw Files\\auto_merge.log.
 
     Never touches Raw Files\\merged_output.xlsx (user's manual workflow).
+    Never creates any file the user wasn't already saving by hand.
     Never pushes anywhere. Never scans the whole Raw Files folder.
 
 Runs entirely on-device: no network. Requires Outlook desktop client to be
@@ -30,7 +34,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 import sys
 import traceback
 from datetime import date, datetime, time as dtime
@@ -143,10 +146,6 @@ def _today_iso() -> str:
     return date.today().isoformat()
 
 
-def _canonical_download_name(d: date) -> str:
-    return f"ZOHO_Pending_Calls_{d.isoformat()}.xlsx"
-
-
 # ─── Outlook COM: find today's mail ──────────────────────────────────────────
 def _find_todays_mail() -> Optional[Tuple[object, str]]:
     """
@@ -202,31 +201,19 @@ def _find_todays_mail() -> Optional[Tuple[object, str]]:
     return msg, att_name
 
 
-def _save_attachment(msg, att_name: str, dest_path: Path) -> None:
-    """Save the (single) attachment of msg to dest_path, converting .xls → .xlsx
-    if needed by round-tripping through pandas."""
-    tmp_path = dest_path.with_suffix(Path(att_name).suffix.lower())
-    # Delete any stale temp with the same name so SaveAsFile doesn't refuse.
+def _save_attachment(msg, dest_path: Path) -> None:
+    """Save the (single) attachment of msg to dest_path AS-IS.
+
+    No renaming, no format conversion. The destination filename is whatever
+    the sender used, which matches what the user already saves by hand. If a
+    file with that name already exists, SaveAsFile refuses — delete it first.
+    """
     try:
-        if tmp_path.exists():
-            tmp_path.unlink()
+        if dest_path.exists():
+            dest_path.unlink()
     except OSError:
         pass
-    msg.Attachments.Item(1).SaveAsFile(str(tmp_path))
-
-    if tmp_path.suffix.lower() == ".xlsx":
-        if tmp_path != dest_path:
-            shutil.move(str(tmp_path), str(dest_path))
-        return
-
-    # .xls → .xlsx: read every sheet, write via merge_core (XlsxWriter).
-    sheets = read_from_path(str(tmp_path))
-    from merge_core import to_excel_file as _to_excel_file
-    _to_excel_file(sheets, str(dest_path))
-    try:
-        tmp_path.unlink()
-    except OSError:
-        pass
+    msg.Attachments.Item(1).SaveAsFile(str(dest_path))
 
 
 # ─── Data pipeline ───────────────────────────────────────────────────────────
@@ -295,67 +282,57 @@ def _union_and_write(prev: pd.DataFrame,
 def _process_today(today: date, dry_run_attachment: Optional[Path] = None) -> int:
     """Main pipeline for one run. Returns process exit code.
 
-    dry_run_attachment: if given, skip the Outlook step entirely and treat
-    this .xls/.xlsx file as the attachment already saved for today. Used by
-    the local dry-run harness.
+    dry_run_attachment: if given, skip the Outlook step entirely and read
+    this .xls/.xlsx file directly as if it were today's attachment. Used by
+    the local dry-run harness — nothing is copied or renamed.
     """
     RAW_FILES_DIR.mkdir(parents=True, exist_ok=True)
     state       = _read_state()
     today_iso   = today.isoformat()
-    dest_path   = RAW_FILES_DIR / _canonical_download_name(today)
 
     # 1. Idempotency ─────────────────────────────────────────────────────────
     if state.get("last_processed_date") == today_iso:
         log.info("Nothing to do — already processed %s.", today_iso)
         return 0
 
-    # 2. Find + save today's attachment (or use the dry-run one) ─────────────
+    # 2. Find today's attachment (or use the dry-run one) ────────────────────
+    #    Save it under the sender's ORIGINAL filename — same as what the user
+    #    saves by hand. No canonical rename, no format conversion.
     if dry_run_attachment is not None:
-        if not dest_path.exists():
-            # Convert / copy the dry-run source into the canonical name.
-            if dry_run_attachment.suffix.lower() == ".xlsx":
-                shutil.copyfile(dry_run_attachment, dest_path)
-            else:
-                sheets = read_from_path(str(dry_run_attachment))
-                to_excel_file(sheets, str(dest_path))
+        source_path  = dry_run_attachment
         source_label = dry_run_attachment.name
-        log.info("Dry-run: using %s as today's attachment → %s",
-                 dry_run_attachment.name, dest_path.name)
+        log.info("Dry-run: reading %s directly (no copy).", source_label)
     else:
-        if dest_path.exists():
-            log.info("Today's file already downloaded (%s) — skipping mail scan.",
-                     dest_path.name)
-            source_label = dest_path.name
-        else:
-            log.info("Scanning Outlook Inbox for today's Pending-Call mail…")
-            try:
-                found = _find_todays_mail()
-            except Exception as e:  # noqa: BLE001
-                log.error("Outlook COM failed: %s\n%s", e, traceback.format_exc())
-                _toast("Auto-merge failed",
-                       f"Outlook COM error: {type(e).__name__}. See auto_merge.log.")
-                return 2
-            if not found:
-                log.info("No qualifying mail in today's Inbox — will retry next hour.")
-                return 0
-            msg, att_name = found
-            try:
-                _save_attachment(msg, att_name, dest_path)
-                log.info("Saved attachment '%s' → %s", att_name, dest_path.name)
-                source_label = dest_path.name
-            except Exception as e:  # noqa: BLE001
-                log.error("Save attachment failed: %s\n%s", e, traceback.format_exc())
-                _toast("Auto-merge failed",
-                       f"Save attachment error: {type(e).__name__}. See auto_merge.log.")
-                return 3
+        log.info("Scanning Outlook Inbox for today's Pending-Call mail…")
+        try:
+            found = _find_todays_mail()
+        except Exception as e:  # noqa: BLE001
+            log.error("Outlook COM failed: %s\n%s", e, traceback.format_exc())
+            _toast("Auto-merge failed",
+                   f"Outlook COM error: {type(e).__name__}. See auto_merge.log.")
+            return 2
+        if not found:
+            log.info("No qualifying mail in today's Inbox — will retry next hour.")
+            return 0
+        msg, att_name = found
+        source_path  = RAW_FILES_DIR / att_name
+        try:
+            _save_attachment(msg, source_path)
+            log.info("Saved attachment as-is: %s", source_path.name)
+            source_label = source_path.name
+        except Exception as e:  # noqa: BLE001
+            log.error("Save attachment failed: %s\n%s", e, traceback.format_exc())
+            _toast("Auto-merge failed",
+                   f"Save attachment error: {type(e).__name__}. See auto_merge.log.")
+            return 3
 
     # 3. Load today's file + apply saved column map ──────────────────────────
     try:
-        today_df = _read_all_sheets_stacked(dest_path, source_label=source_label)
+        today_df = _read_all_sheets_stacked(source_path, source_label=source_label)
     except Exception as e:  # noqa: BLE001
         log.error("Reading today's file failed: %s", e)
         _toast("Auto-merge failed",
-               f"Couldn't read {dest_path.name}: {type(e).__name__}.")
+               f"Couldn't read {source_path.name}: {type(e).__name__}.")
         return 4
 
     column_map = load_column_map(str(COLUMN_MAP_PATH))
@@ -384,14 +361,14 @@ def _process_today(today: date, dry_run_attachment: Optional[Path] = None) -> in
         log.warning(
             "New columns detected in %s — aborting merge until mapping is taught. "
             "Unknown columns: %s",
-            dest_path.name, ", ".join(unknown))
+            source_label, ", ".join(unknown))
         _audit("pause",
-               source_file=dest_path.name,
+               source_file=source_label,
                unknown_columns=list(unknown),
                known_column_count=len(known_canonical))
         _toast(
             "Auto-merge paused — new columns detected",
-            f"{len(unknown)} new column(s) in {dest_path.name}. "
+            f"{len(unknown)} new column(s) in {source_label}. "
             "Open the app once to teach the mapping.")
         # Do NOT mark today as processed — after the user teaches the mapping
         # via the Streamlit app, the next hourly run picks this up cleanly.
