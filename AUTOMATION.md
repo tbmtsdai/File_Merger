@@ -57,31 +57,61 @@ otherwise the script logs "Outlook COM failed" and retries next hour.
 
 Each run, in order:
 
-1. **Idempotency check** — if `.auto_merge_state.json` says today was
-   already processed, exit quietly. Safe to run hourly.
-2. **Outlook Inbox scan** — restrict to today's mail, then keep messages
-   where:
+1. **Outlook Inbox scan** — restrict to the last **30 days** of Inbox,
+   then keep messages where:
    - Subject contains **"Pending Call"** (case-insensitive) — matches both
      the ZOHO and ERP subject variants.
    - Attachment count is **exactly 1** — filters out the evening mail that
      has 2 attachments (Excel + PPT).
-3. **Earliest wins** — of the qualifying mails, the earliest one is used.
-4. **Attachment saved as-is** under the sender's original filename in
+2. **File-date extraction** — parse the `DD-Mon-YYYY` date embedded in
+   the **attachment's filename** (e.g. `ERP Pending Calls as on
+   05-Sep-2026.xls` → 2026-09-05). Handles all the sender's variants
+   (short/full month names, 2-/4-digit years, spaces or hyphens).
+3. **Floor guard** — skip any mail whose file-date is **≤ the last
+   processed file-date** (`state.last_processed_date`). This does three
+   things at once:
+   - Dedupes same-file resends: if the sender sends the 05-Sep file
+     again on Sep 7, the resend is skipped.
+   - Ignores pre-install backlog: mails older than the last date you
+     manually merged are treated as "already handled by hand".
+   - Skips accidental duplicates within a hourly cadence.
+4. **Earliest per file-date** — if the sender resent the same-dated file
+   in multiple mails, the **earliest-received** mail in that group wins.
+5. **Oldest file-date first** — across file-dates, the **oldest**
+   unprocessed date is processed first. This makes catch-up automatic:
+   if you miss Monday and log in Tuesday, Tuesday's 08:00 run picks
+   Monday's mail, 09:00 picks Tuesday's, etc.
+6. **Attachment saved as-is** under the sender's original filename in
    `Raw Files\` (e.g. `ERP Pending Calls as on 07-Sep-2026.xls`).
    No renaming, no format conversion — the folder view stays identical
-   to your manual practice, and the script creates no extra files.
-5. **Column mapping applied** from `Raw Files\column_map.json`.
-6. **Union onto `merged_output_auto.xlsx`** using the exact same
+   to your manual practice.
+7. **Column mapping applied** from `Raw Files\column_map.json`.
+8. **Union onto `merged_output_auto.xlsx`** using the exact same
    Union All + clean-dtypes + XlsxWriter code path the app uses.
-7. **Windows toast** on success / skip / failure.
-8. **State marker updated** so re-runs today are no-ops.
-9. **Processed mail moved** from Inbox to `Inbox\TSD\CC` (best-effort —
-   if the move fails for any reason, the merge is not undone; a
-   `move_failed` line is written to the audit trail).
+9. **Windows toast** + **rolling log line** + **`column_audit.jsonl`**
+   entry (`merged` event with `file_date`).
+10. **`last_processed_date` advanced** to this file-date — the floor
+    moves forward monotonically.
+11. **Processed mail moved** from Inbox to `Inbox\TSD\CC` (best-effort;
+    a failure here writes `move_failed` to the audit trail but does not
+    undo the merge).
 
 `Raw Files\merged_output.xlsx` is never opened or modified.
 Mail is moved only after the merge itself succeeded; on a paused day
 (unknown columns) the mail stays in Inbox for the next hourly retry.
+
+### What happens if you miss a day
+
+Missed Monday, back at your desk Tuesday morning:
+
+1. **Task Scheduler:** `-StartWhenAvailable` fires the missed Monday
+   trigger once when you log in, alongside Tuesday's normal 08:00 trigger.
+2. **Script logic:** the Inbox scan finds both Monday's and Tuesday's
+   mails, both with file-dates > last_processed_date. It picks the
+   **oldest** (Monday), merges it, moves it to CC. The next hourly run
+   picks Tuesday. Backlog clears one mail per hourly tick.
+
+This works for any gap ≤ 30 days (the LOOKBACK_DAYS scan window).
 
 ---
 
