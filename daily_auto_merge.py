@@ -2,7 +2,9 @@
 daily_auto_merge.py — Windows-scheduled unattended daily ZOHO / ERP Pending
 Calls auto-merge.
 
-Runs hourly Mon-Sat 08:00-12:00 (see install_scheduled_task.ps1). Each run:
+Runs hourly Mon-Sat 11:00-15:00 (see install_scheduled_task.ps1;
+the 08:00 and 10:00 slots are used by other project automations).
+Each run:
 
     1. Outlook COM scan    — walk the last LOOKBACK_DAYS days of Inbox, keep
                              mails whose subject contains "Pending Call" AND

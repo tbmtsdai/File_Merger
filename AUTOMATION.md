@@ -41,7 +41,7 @@ cd "C:\Users\k.buch\Documents\file merger and join app"
 # 1. Install the automation-only Python deps into your Anaconda base env.
 C:\Users\k.buch\AppData\Local\anaconda3\python.exe -m pip install -r requirements-auto.txt
 
-# 2. Register the scheduled task (hourly Mon-Sat 08:00-12:00).
+# 2. Register the scheduled task (hourly Mon-Sat 11:00-15:00).
 powershell -ExecutionPolicy Bypass -File .\install_scheduled_task.ps1
 
 # 3. Optional: run once now to prime today's merge.
@@ -79,8 +79,8 @@ Each run, in order:
    in multiple mails, the **earliest-received** mail in that group wins.
 5. **Oldest file-date first** — across file-dates, the **oldest**
    unprocessed date is processed first. This makes catch-up automatic:
-   if you miss Monday and log in Tuesday, Tuesday's 08:00 run picks
-   Monday's mail, 09:00 picks Tuesday's, etc.
+   if you miss Monday and log in Tuesday, Tuesday's 11:00 run picks
+   Monday's mail, 12:00 picks Tuesday's, etc.
 6. **Attachment saved as-is** under the sender's original filename in
    `Raw Files\` (e.g. `ERP Pending Calls as on 07-Sep-2026.xls`).
    No renaming, no format conversion — the folder view stays identical
@@ -105,7 +105,7 @@ Mail is moved only after the merge itself succeeded; on a paused day
 Missed Monday, back at your desk Tuesday morning:
 
 1. **Task Scheduler:** `-StartWhenAvailable` fires the missed Monday
-   trigger once when you log in, alongside Tuesday's normal 08:00 trigger.
+   trigger once when you log in, alongside Tuesday's normal 11:00 trigger.
 2. **Script logic:** the Inbox scan finds both Monday's and Tuesday's
    mails, both with file-dates > last_processed_date. It picks the
    **oldest** (Monday), merges it, moves it to CC. The next hourly run

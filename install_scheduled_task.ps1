@@ -4,8 +4,10 @@
 #
 # What this creates:
 #   Task name  : ZOHO_Daily_AutoMerge
-#   Trigger    : Every hour from 08:00 to 12:00, Monday-Saturday
-#   Action     : C:\anaconda3\python.exe daily_auto_merge.py  (from the repo)
+#   Trigger    : Every hour from 11:00 to 15:00, Monday-Saturday
+#                (11:00, 12:00, 13:00, 14:00, 15:00 — the 08:00 and 10:00
+#                slots are already used by other project automations.)
+#   Action     : C:\Users\k.buch\AppData\Local\anaconda3\python.exe daily_auto_merge.py
 #   Runs as    : the interactive user, only when logged in
 #                (Outlook desktop must be open for COM to work)
 #   Idle/net   : no idle/network requirements; runs even on battery
@@ -54,13 +56,14 @@ $action = New-ScheduledTaskAction `
     -Argument "`"$ScriptPath`"" `
     -WorkingDirectory $ScriptDir
 
-# ── Trigger: hourly Mon-Sat, 08:00 → 12:00 ─────────────────────────────────
+# ── Trigger: hourly Mon-Sat, 11:00 → 15:00 ─────────────────────────────────
 # Register-ScheduledTask does not have a native "hourly for N hours on
 # specific weekdays" one-liner, so we build 5 hourly triggers and constrain
-# each to Mon-Sat via -DaysOfWeek on a Weekly trigger.
+# each to Mon-Sat via -DaysOfWeek on a Weekly trigger. 08:00 and 10:00 are
+# owned by other project automations — 11:00 is the earliest safe slot here.
 $daysOfWeek = 'Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'
 $triggers = @()
-foreach ($hour in 8..12) {
+foreach ($hour in 11..15) {
     $t = New-ScheduledTaskTrigger `
         -Weekly -DaysOfWeek $daysOfWeek `
         -At ([datetime]::Today.AddHours($hour))
