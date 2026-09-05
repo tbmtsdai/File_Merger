@@ -21,12 +21,13 @@ It is **local only** — nothing about this touches Streamlit Cloud, the
 
 Also created on first run, under `Raw Files\`:
 
-| File                               | Purpose                                              |
-| ---------------------------------- | ---------------------------------------------------- |
-| `merged_output_auto.xlsx`          | The rolling merged output (this script's own file)   |
-| `column_map.json`                  | Learned canonical column mapping                      |
-| `auto_merge.log`                   | Rolling log (5 MB rotation, 3 backups kept)          |
-| `.auto_merge_state.json`           | Idempotency marker (which day was last processed)    |
+| File                               | Purpose                                                                       |
+| ---------------------------------- | ----------------------------------------------------------------------------- |
+| `merged_output_auto.xlsx`          | The rolling merged output (this script's own file)                            |
+| `column_map.json`                  | Learned canonical column mapping (`{"source name": "canonical name", ...}`)   |
+| `column_audit.jsonl`               | Datewise audit trail — one JSON line per `seeded` / `merged` / `pause` event  |
+| `auto_merge.log`                   | Rolling log (5 MB rotation, 3 backups kept)                                   |
+| `.auto_merge_state.json`           | Idempotency marker (which day was last processed)                             |
 
 ---
 
@@ -38,7 +39,7 @@ Open **PowerShell as your normal user** (not Administrator) and run:
 cd "C:\Users\k.buch\Documents\file merger and join app"
 
 # 1. Install the automation-only Python deps into your Anaconda base env.
-C:\anaconda3\python.exe -m pip install -r requirements-auto.txt
+C:\Users\k.buch\AppData\Local\anaconda3\python.exe -m pip install -r requirements-auto.txt
 
 # 2. Register the scheduled task (hourly Mon-Sat 08:00-12:00).
 powershell -ExecutionPolicy Bypass -File .\install_scheduled_task.ps1
@@ -79,25 +80,49 @@ Each run, in order:
 
 ## The column-mapping learning loop
 
-The script never guesses column names. On day 1 it seeds
-`merged_output_auto.xlsx` from your existing `merged_output.xlsx` and
-treats those columns as the baseline (no mapping needed). From day 2
-onward, every new file must map cleanly.
+The script **never** guesses column names. `merged_output.xlsx`'s
+columns are the canonical set: every incoming column must either match
+one of them exactly (whitespace / hyphen / case included — strict) or
+be listed as a source key in `column_map.json`.
 
-If the day's file has any column that is **not** already known (neither
-present in the previous merge nor listed in `column_map.json` as a source
-key), the script:
+If the day's file has **any** unknown column, the script:
 
 - Logs the unknown column names.
 - Fires a toast: *"Auto-merge paused — new columns detected. Open the app
   once to teach the mapping."*
+- Writes a `pause` line to `column_audit.jsonl` naming the offending
+  columns so you can review later.
 - Does **not** mark the day as processed — after you teach the mapping,
-  the next hourly run picks it up.
+  the next hourly run picks it up cleanly.
 
 **To teach a mapping:** open the app (`run_app.bat` → localhost:8501),
 load today's file plus at least one older file that already merges, and
 use the Column Alignment step to assign canonical names. Submitting the
 form writes the learned mapping to `column_map.json` automatically.
+
+---
+
+## Audit trail (`column_audit.jsonl`)
+
+One append-only JSON line per event, so you can see who paused when.
+Open it in any text editor, or import into Excel as JSON.
+
+Events:
+
+| event      | Fields (in addition to `timestamp`, `date`, `event`)                                          |
+| ---------- | --------------------------------------------------------------------------------------------- |
+| `seeded`   | `source_file` (= `merged_output.xlsx`), `canonical_column_count`                              |
+| `merged`   | `source_file`, `rows_added`, `total_rows`, `output_file`                                      |
+| `pause`    | `source_file`, `unknown_columns` (array), `known_column_count`                                |
+
+Example:
+
+```json
+{"timestamp": "2026-09-07T08:03:12", "date": "2026-09-07", "event": "pause", "source_file": "ZOHO_Pending_Calls_2026-09-07.xlsx", "unknown_columns": ["Contract End Dt"], "known_column_count": 37}
+{"timestamp": "2026-09-07T10:14:55", "date": "2026-09-07", "event": "merged", "source_file": "ZOHO_Pending_Calls_2026-09-07.xlsx", "rows_added": 1104, "total_rows": 116558, "output_file": "merged_output_auto.xlsx"}
+```
+
+Never truncated — keep the full history.
 
 ---
 

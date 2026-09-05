@@ -19,7 +19,7 @@ $ErrorActionPreference = 'Stop'
 $TaskName    = 'ZOHO_Daily_AutoMerge'
 $ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ScriptPath  = Join-Path $ScriptDir 'daily_auto_merge.py'
-$PythonExe   = 'C:\anaconda3\python.exe'   # Kshitij's Anaconda Python
+$PythonExe   = 'C:\Users\k.buch\AppData\Local\anaconda3\python.exe'   # Kshitij's Anaconda Python
 $LogsDir     = 'C:\Users\k.buch\OneDrive - Transasia Bio Medicals Ltd\TBM 2026 Onwards\Pending Calls\Raw Files'
 
 # ── Sanity checks ──────────────────────────────────────────────────────────

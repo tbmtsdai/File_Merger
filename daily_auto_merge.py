@@ -64,6 +64,7 @@ RAW_FILES_DIR = Path(
 )
 LOG_PATH             = RAW_FILES_DIR / "auto_merge.log"
 STATE_PATH           = RAW_FILES_DIR / ".auto_merge_state.json"
+AUDIT_PATH           = RAW_FILES_DIR / "column_audit.jsonl"          # datewise audit
 COLUMN_MAP_PATH      = RAW_FILES_DIR / "column_map.json"
 MERGED_MANUAL_PATH   = RAW_FILES_DIR / "merged_output.xlsx"          # DO NOT TOUCH
 MERGED_AUTO_PATH     = RAW_FILES_DIR / "merged_output_auto.xlsx"     # ours
@@ -101,6 +102,27 @@ def _toast(title: str, body: str) -> None:
         Notification(app_id=APP_ID, title=title, msg=body).show()
     except Exception as e:  # noqa: BLE001
         log.warning("toast failed (%s): %s", type(e).__name__, e)
+
+
+def _audit(event: str, **fields) -> None:
+    """Append one JSON line to Raw Files\\column_audit.jsonl.
+
+    Each line records: timestamp, date, event (pause | merged | seeded),
+    source_file, and event-specific fields (unknown_columns, rows_added, ...).
+    Never raises — audit failure must not break the pipeline.
+    """
+    try:
+        record = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "date": date.today().isoformat(),
+            "event": event,
+            **fields,
+        }
+        AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with AUDIT_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as e:  # noqa: BLE001
+        log.warning("audit write failed: %s", e)
 
 
 # ─── State (idempotency) ─────────────────────────────────────────────────────
@@ -340,34 +362,40 @@ def _process_today(today: date, dry_run_attachment: Optional[Path] = None) -> in
     today_df   = apply_column_map(today_df, column_map)
 
     # 4. First-run seed vs steady-state ──────────────────────────────────────
-    seeded = False
     if not MERGED_AUTO_PATH.exists():
-        log.info("First run — seeding from merged_output.xlsx.")
+        log.info("First run — seeding from merged_output.xlsx (canonical columns).")
         prev = _seed_from_manual()
-        # Ensure the seed's columns also pass through the column map so it
-        # lines up with today_df.
+        # Apply the column map to the seed too so canonical names line up.
         prev = apply_column_map(prev, column_map) if not prev.empty else prev
-        seeded = True
+        _audit("seeded",
+               source_file=MERGED_MANUAL_PATH.name,
+               canonical_column_count=len(prev.columns) if not prev.empty else 0)
     else:
         prev = _load_prev_merged()
 
-    # 5. Unknown-column guard (skip on first-run seed — user's baseline is
-    #    treated as authoritative) ──────────────────────────────────────────
-    if not seeded:
-        known_canonical = set(prev.columns) if not prev.empty else set()
-        unknown = unknown_columns(today_df, column_map, known_canonical)
-        if unknown:
-            log.warning(
-                "New columns detected in %s — aborting merge until mapping is taught. "
-                "Unknown columns: %s",
-                dest_path.name, ", ".join(unknown))
-            _toast(
-                "Auto-merge paused — new columns detected",
-                f"{len(unknown)} new column(s) in {dest_path.name}. "
-                "Open the app once to teach the mapping.")
-            # Do NOT mark today as processed — tomorrow's mapping fix should
-            # let a subsequent run pick this up cleanly.
-            return 5
+    # 5. Unknown-column guard — ALWAYS enforced. merged_output.xlsx's columns
+    #    (as loaded into prev) are the canonical set. Any incoming column not
+    #    already canonical AND not listed as a source key in column_map.json
+    #    triggers a pause + toast + audit-log entry. Strict: even whitespace,
+    #    hyphen, or case differences are treated as "new column".
+    known_canonical = set(prev.columns) if not prev.empty else set()
+    unknown = unknown_columns(today_df, column_map, known_canonical)
+    if unknown:
+        log.warning(
+            "New columns detected in %s — aborting merge until mapping is taught. "
+            "Unknown columns: %s",
+            dest_path.name, ", ".join(unknown))
+        _audit("pause",
+               source_file=dest_path.name,
+               unknown_columns=list(unknown),
+               known_column_count=len(known_canonical))
+        _toast(
+            "Auto-merge paused — new columns detected",
+            f"{len(unknown)} new column(s) in {dest_path.name}. "
+            "Open the app once to teach the mapping.")
+        # Do NOT mark today as processed — after the user teaches the mapping
+        # via the Streamlit app, the next hourly run picks this up cleanly.
+        return 5
 
     # 6. Union + write ───────────────────────────────────────────────────────
     try:
@@ -381,6 +409,11 @@ def _process_today(today: date, dry_run_attachment: Optional[Path] = None) -> in
     log.info(
         "OK  date=%s  source=%s  rows_added=%d  total_rows=%d  output=%s",
         today_iso, source_label, added, total, MERGED_AUTO_PATH.name)
+    _audit("merged",
+           source_file=source_label,
+           rows_added=added,
+           total_rows=total,
+           output_file=MERGED_AUTO_PATH.name)
     _toast(
         "Auto-merge complete",
         f"{added:,} new rows for {today_iso} · total {total:,} rows.")
