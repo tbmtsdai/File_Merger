@@ -1,0 +1,16 @@
+# Extra dependencies for daily_auto_merge.py (Windows-only, local automation).
+# The Streamlit app's own deps are in requirements.txt.
+#
+# Install once, in the same Anaconda base env used to run the app:
+#   C:\anaconda3\python.exe -m pip install -r requirements-auto.txt
+#
+# pywin32 provides win32com.client → Outlook COM automation.
+pywin32>=306
+
+# winotify is a tiny, pure-Python Windows-toast library — one file, no deps.
+# Preferred over win10toast (unmaintained, DLL-loading quirks on Win11).
+winotify>=1.1.0
+
+# XlsxWriter is already in requirements.txt but we list it here defensively so
+# `pip install -r requirements-auto.txt` alone is enough to run the script.
+XlsxWriter>=3.1.0,<4.0

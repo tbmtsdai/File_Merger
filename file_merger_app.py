@@ -12,6 +12,21 @@ import pandas as pd
 import streamlit as st
 from matplotlib_venn import venn2, venn2_circles
 
+# Shared pure-pandas merge/clean/dedup/I-O helpers live in merge_core so the
+# daily auto-merge script (daily_auto_merge.py) can reuse them without
+# importing Streamlit. Keep the names below in sync with merge_core.py.
+from merge_core import (
+    TRACKING_COLS, DATE_KEYWORDS, CITY_KEYWORDS, REGION_KEYWORDS,
+    EXCEL_ROW_LIMIT,
+    _col_words, _dedup_columns, col_sig, group_sheets,
+    clean_dtypes, dedup_with_audit,
+    do_union_all, do_union_distinct, _chain_join,
+    do_inner_join, do_left_join, do_right_join, do_full_outer_join, do_cross_join,
+    read_from_path, _make_excel_writer, to_excel_bytes, to_csv_bytes,
+    load_column_map, save_column_map, flatten_renames_map,
+    merge_and_save_column_map, apply_column_map, unknown_columns,
+)
+
 try:
     import tkinter as tk
     from tkinter import filedialog as _tkfd
@@ -64,11 +79,9 @@ st.markdown("""
 
 
 # ─── Constants ─────────────────────────────────────────────────────────────────
-TRACKING_COLS   = {"Source File", "Source Date", "Source Sheet"}
-DATE_KEYWORDS   = {"date","time","created","modified","due","updated","closed",
-                   "opened","reported","raised","logged"}
-CITY_KEYWORDS   = {"city","town"}
-REGION_KEYWORDS = {"region","zone","area","territory","state","country"}
+# TRACKING_COLS, DATE_KEYWORDS, CITY_KEYWORDS, REGION_KEYWORDS are imported
+# from merge_core (kept in sync so the daily auto-merge script sees the same
+# tracking-column semantics as the app).
 
 
 # ─── Dummy data (Learn tab) ────────────────────────────────────────────────────
@@ -109,115 +122,11 @@ get_dummy = get_dummy_join
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# DATA TYPE CLEANING
+# DATA TYPE CLEANING + DUPLICATE AUDIT
+# _col_words, _dedup_columns, clean_dtypes and dedup_with_audit are imported
+# from merge_core (extracted on 2026-09-05 so the auto-merge script can reuse
+# them). show_audit stays here because it renders Streamlit widgets.
 # ═══════════════════════════════════════════════════════════════════════════════
-
-def _col_words(name):
-    return set(re.split(r"[\s_\-/()+]+", name.lower()))
-
-
-def _dedup_columns(df):
-    """Return df with any duplicate column names made unique (col → col_2, col_3…)."""
-    if not df.columns.duplicated().any():
-        return df
-    seen: dict = {}
-    new_cols = []
-    for c in df.columns:
-        if c not in seen:
-            seen[c] = 0
-            new_cols.append(c)
-        else:
-            seen[c] += 1
-            new_cols.append(f"{c}_{seen[c] + 1}")
-    df = df.copy()
-    df.columns = new_cols
-    return df
-
-
-def clean_dtypes(df):
-    """
-    Auto-clean column types in-place.
-    Returns (cleaned_df, report_list).
-      - Date-sounding columns: try pd.to_datetime (dayfirst=True)
-      - City/region columns:   strip whitespace + title-case
-      - All other str columns: strip whitespace
-
-    Defensive: skips non-string column names, duplicate column names
-    (where df[col] would return a DataFrame rather than a Series), and
-    any column that raises unexpectedly.
-    """
-    df = df.copy()
-    report = []
-    # Build a set of column names that appear more than once — accessing
-    # df[col] for a duplicate name returns a DataFrame, not a Series,
-    # which causes AttributeError on .dtype.  Skip all copies of such names.
-    duped = set(df.columns[df.columns.duplicated(keep=False)])
-
-    for col in df.columns:
-        # Skip tracking cols, duplicates, and non-string names
-        if col in TRACKING_COLS or col in duped:
-            continue
-        if not isinstance(col, str):
-            continue
-
-        try:
-            series = df[col]
-            # Extra guard: if somehow still a DataFrame, skip
-            if isinstance(series, pd.DataFrame):
-                continue
-        except Exception:
-            continue
-
-        words = _col_words(col)
-
-        # ── Date columns ──────────────────────────────────────────────────
-        if words & DATE_KEYWORDS and series.dtype == object:
-            conv  = pd.to_datetime(series, errors="coerce", dayfirst=True)
-            total = int(series.notna().sum())
-            hit   = int(conv.notna().sum())
-            if total > 0 and hit / total >= 0.5:
-                df[col] = conv
-                report.append(f"'{col}' → datetime  ({hit}/{total} values parsed)")
-                continue
-
-        # ── String cleanup ────────────────────────────────────────────────
-        if series.dtype == object:
-            before  = series.fillna("").copy()
-            df[col] = series.str.strip()
-            if words & (CITY_KEYWORDS | REGION_KEYWORDS):
-                df[col] = df[col].str.title()
-                report.append(f"'{col}' → stripped + title-cased (city/region)")
-            elif (df[col].fillna("") != before).any():
-                report.append(f"'{col}' → stripped whitespace")
-
-    return df, report
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# DUPLICATE AUDIT
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def dedup_with_audit(df, check_cols):
-    """
-    Remove duplicates (keep first occurrence) and return (clean_df, audit_df).
-
-    audit_df contains every removed row plus a 'Removed Row# (Excel)' column
-    showing the 1-based row number in the pre-dedup combined frame (row 2 = first
-    data row, matching Excel's header-on-row-1 convention).
-
-    To plug in a different dedup strategy: write a new function with signature
-        fn(dfs, key, excl) -> (result_df, audit_df)
-    and add it to STRATEGIES below.
-    """
-    valid = [c for c in check_cols if c in df.columns]
-    if not valid:
-        return df.copy(), pd.DataFrame()
-    mask    = df.duplicated(subset=valid, keep="first")
-    removed = df[mask].copy()
-    if not removed.empty:
-        removed.insert(0, "Removed Row# (Excel)", [i + 2 for i in df[mask].index])
-    return df[~mask].reset_index(drop=True), removed
-
 
 def show_audit(all_audits):
     """Render the combined duplicate-audit section after a merge."""
@@ -241,98 +150,11 @@ def show_audit(all_audits):
 # ═══════════════════════════════════════════════════════════════════════════════
 # MERGE / JOIN FUNCTIONS  — all return (result_df, audit_df)
 #
-# Standard SQL set operations implemented on top of pandas:
-#   • Union All              → pd.concat
-#   • Union All (Distinct)   → pd.concat → drop_duplicates
-#   • Inner / Left / Right / Full Outer / Cross  → chained pd.merge
-#
-# Multi-file joins are chained left-to-right:  ((A ⨝ B) ⨝ C) ⨝ D ...
-# All operations are pure pandas — no custom logic, fully standard.
+# The concrete implementations (do_union_all, do_union_distinct, do_inner_join,
+# do_left_join, do_right_join, do_full_outer_join, do_cross_join, plus
+# _chain_join and EXCEL_ROW_LIMIT) live in merge_core so both this app and the
+# unattended daily_auto_merge.py script use the same code path.
 # ═══════════════════════════════════════════════════════════════════════════════
-
-EXCEL_ROW_LIMIT = 1_048_576
-
-
-def do_union_all(dfs, key=None, excl=None):
-    """Stack all rows vertically. Columns aligned by name (outer join on columns)."""
-    return pd.concat(dfs, ignore_index=True, join="outer"), pd.DataFrame()
-
-
-def do_union_distinct(dfs, key=None, excl=None):
-    """Stack vertically, then drop rows where every checked column is identical."""
-    combined = pd.concat(dfs, ignore_index=True, join="outer")
-    check = [c for c in combined.columns
-             if c not in (excl or set()) and c not in TRACKING_COLS]
-    return dedup_with_audit(combined, check)
-
-
-def _chain_join(dfs, key, how):
-    """Chain pd.merge left-to-right. All dfs must contain the key column."""
-    # Validate key column is present everywhere
-    missing = [i + 1 for i, d in enumerate(dfs) if key not in d.columns]
-    if missing:
-        raise ValueError(
-            f"Key column '{key}' is missing in file/sheet #{missing}. "
-            f"Add it (or remap a column to '{key}') before joining.")
-
-    result = dfs[0].copy()
-    for i, d in enumerate(dfs[1:], start=2):
-        result = pd.merge(
-            result, d, on=key, how=how,
-            suffixes=("", f"__t{i}"))
-    return result
-
-
-def do_inner_join(dfs, key, excl=None):
-    if not key:
-        raise ValueError("Inner Join requires a key column.")
-    if len(dfs) == 1:
-        return dfs[0].copy(), pd.DataFrame()
-    return _chain_join(dfs, key, "inner"), pd.DataFrame()
-
-
-def do_left_join(dfs, key, excl=None):
-    if not key:
-        raise ValueError("Left Join requires a key column.")
-    if len(dfs) == 1:
-        return dfs[0].copy(), pd.DataFrame()
-    return _chain_join(dfs, key, "left"), pd.DataFrame()
-
-
-def do_right_join(dfs, key, excl=None):
-    if not key:
-        raise ValueError("Right Join requires a key column.")
-    if len(dfs) == 1:
-        return dfs[0].copy(), pd.DataFrame()
-    return _chain_join(dfs, key, "right"), pd.DataFrame()
-
-
-def do_full_outer_join(dfs, key, excl=None):
-    if not key:
-        raise ValueError("Full Outer Join requires a key column.")
-    if len(dfs) == 1:
-        return dfs[0].copy(), pd.DataFrame()
-    return _chain_join(dfs, key, "outer"), pd.DataFrame()
-
-
-def do_cross_join(dfs, key=None, excl=None):
-    """Cartesian product of all files. Pre-checks against Excel row limit."""
-    if len(dfs) == 1:
-        return dfs[0].copy(), pd.DataFrame()
-    rows = 1
-    for d in dfs:
-        rows *= len(d)
-    if rows > EXCEL_ROW_LIMIT:
-        raise ValueError(
-            f"Cross join would produce {rows:,} rows — exceeds Excel's "
-            f"{EXCEL_ROW_LIMIT:,} row limit. Reduce inputs first.")
-    result = dfs[0].copy()
-    for i, d in enumerate(dfs[1:], start=2):
-        result = pd.merge(
-            result, d, how="cross",
-            suffixes=("", f"__t{i}"))
-    return result, pd.DataFrame()
-
 
 STRATEGIES = {
     "Union All": dict(
@@ -559,65 +381,42 @@ def read_all_sheets_cached(file_bytes, filename):
     raise RuntimeError(f"Cannot read {filename}: {last_err}")
 
 
-def read_from_path(path):
-    ext = os.path.splitext(path)[1].lower()
-    if ext == ".csv":
-        return {"Sheet1": pd.read_csv(path)}
-    engines = ["openpyxl","xlrd"] if ext == ".xlsx" else ["xlrd","openpyxl"]
-    last_err = None
-    for eng in engines:
-        try:
-            xl = pd.ExcelFile(path, engine=eng)
-            return {s: xl.parse(s) for s in xl.sheet_names}
-        except Exception as e:
-            last_err = e
-    raise RuntimeError(f"Cannot read {path}: {last_err}")
-
-
-def col_sig(df):
-    return frozenset(c for c in df.columns if c not in TRACKING_COLS)
-
-
-def group_sheets(file_sheet_dfs):
-    buckets = {}
-    for fname, sheet, df in file_sheet_dfs:
-        buckets.setdefault(col_sig(df), []).append((fname, sheet, df))
-    return sorted(buckets.items(), key=lambda x: -len(x[0]))
-
-
-def _make_excel_writer(buf):
-    """Return an ExcelWriter, preferring XlsxWriter over openpyxl.
-
-    openpyxl holds the *entire* workbook in RAM as Python Cell objects before
-    writing — for large merges (tens of thousands of rows) that transient
-    spike can exceed the ~1 GB Streamlit Cloud limit and get the container
-    OOM-killed. XlsxWriter streams each worksheet to a temp file and keeps
-    only a compact shared-string table in memory, so peak RAM stays low and
-    the output file is smaller and better-compressed. Fall back to openpyxl
-    only if XlsxWriter isn't installed.
-    """
-    try:
-        return pd.ExcelWriter(buf, engine="xlsxwriter")
-    except (ImportError, ModuleNotFoundError, ValueError):
-        return pd.ExcelWriter(buf, engine="openpyxl")
-
-
-def to_excel_bytes(sheet_dict):
-    buf = io.BytesIO()
-    with _make_excel_writer(buf) as w:
-        for name, df in sheet_dict.items():
-            safe = name[:31].translate(str.maketrans(r'\/[]*?:', '_______'))
-            df.to_excel(w, sheet_name=safe, index=False)
-    return buf.getvalue()
-
-
-def to_csv_bytes(df):
-    return df.to_csv(index=False).encode("utf-8")
+# read_from_path, col_sig, group_sheets, _make_excel_writer, to_excel_bytes,
+# and to_csv_bytes are imported from merge_core.
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # COLUMN MAPPING UI
 # ═══════════════════════════════════════════════════════════════════════════════
+
+# Local path to the OneDrive-backed Raw Files folder used by the daily
+# auto-merge script. When the app runs on this Windows laptop, confirmed
+# column mappings are persisted here so tomorrow's automated run picks them up
+# without any extra click. Missing folder (cloud, or a different machine) is
+# a silent no-op — the app still works, just doesn't teach the auto-merge.
+_RAW_FILES_DIR = (
+    r"C:\Users\k.buch\OneDrive - Transasia Bio Medicals Ltd"
+    r"\TBM 2026 Onwards\Pending Calls\Raw Files"
+)
+_COLUMN_MAP_PATH = os.path.join(_RAW_FILES_DIR, "column_map.json")
+
+
+def _persist_column_map_from_app(renames_map):
+    """Write confirmed column mappings (per-file → flat) to
+    Raw Files\\column_map.json so daily_auto_merge.py can apply them
+    automatically on its next run. Silent no-op if the Raw Files folder is
+    not present on this machine."""
+    if not os.path.isdir(_RAW_FILES_DIR):
+        return
+    try:
+        flat = flatten_renames_map(renames_map)
+        if not flat:
+            return
+        merge_and_save_column_map(_COLUMN_MAP_PATH, flat)
+    except Exception:
+        # Never let a persistence failure break the merge itself.
+        pass
+
 
 def render_column_mapping(all_triples, tab_key="upload"):
     """
@@ -736,6 +535,10 @@ def render_column_mapping(all_triples, tab_key="upload"):
                     renames_map.setdefault(f, {})[col] = canonical
         st.session_state[ss_key] = renames_map
         n = sum(len(v) for v in renames_map.values())
+        # Persist confirmed mapping to Raw Files\column_map.json so the daily
+        # auto-merge script picks it up on its next run without another click.
+        # Silent no-op on machines that don't have the Raw Files folder.
+        _persist_column_map_from_app(renames_map)
         if n:
             st.success(f"Mapping applied: {n} rename(s). Sheets re-grouped below.")
         else:
