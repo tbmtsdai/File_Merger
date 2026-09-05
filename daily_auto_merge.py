@@ -20,10 +20,14 @@ Runs hourly Mon-Sat 08:00-12:00 (see install_scheduled_task.ps1). Each run:
                              + today's file only.
     6. XlsxWriter output   — mirrors the app's OOM-safe writer.
     7. Notify + log        — winotify toast, rolling log at Raw Files\\auto_merge.log.
+    8. Move mail to CC     — after merge success, move the processed mail
+                             from Inbox to Inbox\\TSD\\CC. Best-effort;
+                             failure here is audited but never fails the run.
 
     Never touches Raw Files\\merged_output.xlsx (user's manual workflow).
     Never creates any file the user wasn't already saving by hand.
     Never pushes anywhere. Never scans the whole Raw Files folder.
+    Never moves mail unless the merge succeeded.
 
 Runs entirely on-device: no network. Requires Outlook desktop client to be
 open (it uses the same COM session the user's Outlook session provides).
@@ -77,6 +81,11 @@ LOG_MAX_BYTES        = 5 * 1024 * 1024  # 5 MB rotation
 LOG_BACKUP_COUNT     = 3
 
 APP_ID               = "ZOHO Auto-Merge"
+
+# After a successful merge, move the processed mail to
+# Inbox\<CC_FOLDER_PATH[0]>\<CC_FOLDER_PATH[1]>\... — matches the user's
+# manual "file it under TSD\CC" habit and keeps the Inbox clean.
+CC_FOLDER_PATH       = ("TSD", "CC")
 
 
 # ─── Logging + toast ─────────────────────────────────────────────────────────
@@ -201,6 +210,36 @@ def _find_todays_mail() -> Optional[Tuple[object, str]]:
     return msg, att_name
 
 
+def _try_move_to_cc(msg, source_label: str) -> None:
+    """Move the processed mail into Inbox\\TSD\\CC (per CC_FOLDER_PATH).
+
+    Best-effort: any failure here is logged + audited but never breaks the
+    pipeline — the merge has already succeeded by the time we get here.
+    """
+    import pythoncom            # noqa: F401  (COM init under Task Scheduler)
+    import win32com.client as win32
+
+    dest_display = "Inbox\\" + "\\".join(CC_FOLDER_PATH)
+    try:
+        outlook   = win32.Dispatch("Outlook.Application")
+        namespace = outlook.GetNamespace("MAPI")
+        target    = namespace.GetDefaultFolder(6)   # 6 = olFolderInbox
+        for name in CC_FOLDER_PATH:
+            target = target.Folders[name]
+        msg.Move(target)
+        log.info("Moved processed mail (%s) → %s.", source_label, dest_display)
+        _audit("moved", source_file=source_label, destination=dest_display)
+    except Exception as e:  # noqa: BLE001
+        log.warning(
+            "Could not move mail to %s (%s: %s). Merge already succeeded; "
+            "move step skipped.",
+            dest_display, type(e).__name__, e)
+        _audit("move_failed",
+               source_file=source_label,
+               destination=dest_display,
+               error=f"{type(e).__name__}: {e}")
+
+
 def _save_attachment(msg, dest_path: Path) -> None:
     """Save the (single) attachment of msg to dest_path AS-IS.
 
@@ -298,6 +337,8 @@ def _process_today(today: date, dry_run_attachment: Optional[Path] = None) -> in
     # 2. Find today's attachment (or use the dry-run one) ────────────────────
     #    Save it under the sender's ORIGINAL filename — same as what the user
     #    saves by hand. No canonical rename, no format conversion.
+    msg = None                                      # live Outlook mail; kept
+    # around so step 8 can move it after the merge succeeds. None on dry-run.
     if dry_run_attachment is not None:
         source_path  = dry_run_attachment
         source_label = dry_run_attachment.name
@@ -401,6 +442,13 @@ def _process_today(today: date, dry_run_attachment: Optional[Path] = None) -> in
     state["last_processed_rows"]   = total
     state["last_processed_added"]  = added
     _write_state(state)
+
+    # 8. Best-effort: move the processed mail to Inbox\TSD\CC. ───────────────
+    #    Only in live Outlook mode (msg is None during dry-run). Failure here
+    #    is logged + audited but does not fail the run — the merge is done.
+    if msg is not None:
+        _try_move_to_cc(msg, source_label)
+
     return 0
 
 

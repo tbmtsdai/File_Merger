@@ -75,8 +75,13 @@ Each run, in order:
    Union All + clean-dtypes + XlsxWriter code path the app uses.
 7. **Windows toast** on success / skip / failure.
 8. **State marker updated** so re-runs today are no-ops.
+9. **Processed mail moved** from Inbox to `Inbox\TSD\CC` (best-effort —
+   if the move fails for any reason, the merge is not undone; a
+   `move_failed` line is written to the audit trail).
 
 `Raw Files\merged_output.xlsx` is never opened or modified.
+Mail is moved only after the merge itself succeeded; on a paused day
+(unknown columns) the mail stays in Inbox for the next hourly retry.
 
 ---
 
@@ -111,11 +116,13 @@ Open it in any text editor, or import into Excel as JSON.
 
 Events:
 
-| event      | Fields (in addition to `timestamp`, `date`, `event`)                                          |
-| ---------- | --------------------------------------------------------------------------------------------- |
-| `seeded`   | `source_file` (= `merged_output.xlsx`), `canonical_column_count`                              |
-| `merged`   | `source_file`, `rows_added`, `total_rows`, `output_file`                                      |
-| `pause`    | `source_file`, `unknown_columns` (array), `known_column_count`                                |
+| event          | Fields (in addition to `timestamp`, `date`, `event`)                                       |
+| -------------- | ------------------------------------------------------------------------------------------ |
+| `seeded`       | `source_file` (= `merged_output.xlsx`), `canonical_column_count`                           |
+| `merged`       | `source_file`, `rows_added`, `total_rows`, `output_file`                                   |
+| `pause`        | `source_file`, `unknown_columns` (array), `known_column_count`                             |
+| `moved`        | `source_file`, `destination` (e.g. `Inbox\TSD\CC`)                                         |
+| `move_failed`  | `source_file`, `destination`, `error` (Outlook COM exception summary — merge still stood)  |
 
 Example:
 
