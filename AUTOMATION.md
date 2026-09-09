@@ -58,15 +58,17 @@ otherwise the script logs "Outlook COM failed" and retries next hour.
 Each run, in order:
 
 1. **Outlook Inbox scan** — restrict to the last **30 days** of Inbox,
-   then keep messages where:
-   - Subject contains **"Pending Call"** (case-insensitive) — matches both
-     the ZOHO and ERP subject variants.
-   - Attachment count is **exactly 1** — filters out the evening mail that
-     has 2 attachments (Excel + PPT).
-2. **File-date extraction** — parse the `DD-Mon-YYYY` date embedded in
-   the **attachment's filename** (e.g. `ERP Pending Calls as on
+   then keep messages where the subject contains **"Pending Call"**
+   (case-insensitive) — matches both the ZOHO and ERP subject variants.
+   Attachment count is **not** used as a filter: the evening mail can
+   carry 1 or 2 attachments (Excel + optional PPT), so identification is
+   subject + a parseable Excel file-date instead.
+2. **File-date extraction** — for each mail, pick the first Excel
+   attachment (`.xls` / `.xlsx` / `.xlsm`) whose filename yields a
+   parseable `DD-Mon-YYYY` date (e.g. `ERP Pending Calls as on
    05-Sep-2026.xls` → 2026-09-05). Handles all the sender's variants
-   (short/full month names, 2-/4-digit years, spaces or hyphens).
+   (short/full month names, 2-/4-digit years, spaces or hyphens). Mails
+   without any Excel-with-date are ignored.
 3. **Floor guard** — skip any mail whose file-date is **≤ the last
    processed file-date** (`state.last_processed_date`). This does three
    things at once:
@@ -92,9 +94,13 @@ Each run, in order:
    entry (`merged` event with `file_date`).
 10. **`last_processed_date` advanced** to this file-date — the floor
     moves forward monotonically.
-11. **Processed mail moved** from Inbox to `Inbox\TSD\CC` (best-effort;
-    a failure here writes `move_failed` to the audit trail but does not
-    undo the merge).
+11. **Inbox sweep to `Inbox\TSD\CC`** — every Pending-Calls mail whose
+    Excel-attachment file-date is now `≤ last_processed_date` is moved
+    to `Inbox\TSD\CC`. This is a **sweep**, not a single-msg move: it
+    catches the morning mail we just processed, the evening mail for the
+    same file-date (regardless of attachment count), same-date resends,
+    and stragglers from earlier days. Best-effort; a failure here writes
+    `move_failed` to the audit trail but does not undo the merge.
 
 `Raw Files\merged_output.xlsx` is never opened or modified.
 Mail is moved only after the merge itself succeeded; on a paused day

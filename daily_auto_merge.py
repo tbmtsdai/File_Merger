@@ -7,13 +7,16 @@ the 08:00 and 10:00 slots are used by other project automations).
 Each run:
 
     1. Outlook COM scan    — walk the last LOOKBACK_DAYS days of Inbox, keep
-                             mails whose subject contains "Pending Call" AND
-                             that carry exactly ONE Excel attachment.
-    2. File-date dedupe    — parse the "DD-Mon-YYYY" date out of the
-                             attachment's FILENAME; skip mails whose
-                             file-date is <= state.last_processed_date
-                             (i.e. already processed or covered by the
-                             user's manual workflow before install).
+                             mails whose subject contains "Pending Call".
+                             (Attachment count is NOT used — evening mails
+                             may have 1 or 2 attachments; we identify by
+                             subject + parseable Excel file-date instead.)
+    2. File-date dedupe    — for each mail pick the first Excel attachment
+                             whose filename yields a parseable "DD-Mon-YYYY"
+                             date; skip mails whose file-date is <=
+                             state.last_processed_date (already processed
+                             or covered by the user's manual workflow
+                             before install).
     3. Earliest-per-date   — if the sender resent the same-dated file
                              across multiple mails, keep the earliest one.
                              Across dates, pick the OLDEST file-date first,
@@ -31,9 +34,12 @@ Each run:
     7. XlsxWriter output   — mirrors the app's OOM-safe writer.
     8. Notify + log        — winotify toast, rolling log at Raw Files\\auto_merge.log,
                              structured audit trail at column_audit.jsonl.
-    9. Move mail to CC     — after merge success, move the processed mail
-                             from Inbox to Inbox\\TSD\\CC. Best-effort;
-                             failure here is audited but never fails the run.
+    9. Sweep-move to CC    — after merge success, SWEEP every Inbox
+                             Pending-Calls mail whose Excel file-date is
+                             <= the new floor into Inbox\\TSD\\CC. Catches
+                             morning + evening (1 or 2 attachments) +
+                             resends + stragglers. Best-effort; failure
+                             is audited but never fails the run.
 
     Never touches Raw Files\\merged_output.xlsx (user's manual workflow).
     Never creates any file the user wasn't already saving by hand.
@@ -220,6 +226,36 @@ def _today_iso() -> str:
     return date.today().isoformat()
 
 
+# ─── Outlook COM helpers ─────────────────────────────────────────────────────
+def _pick_excel_with_date(msg) -> Optional[Tuple[str, date]]:
+    """Return (attachment_name, file_date) for the FIRST Excel attachment
+    on msg whose filename yields a parseable date. None if there isn't one.
+
+    Iterating (rather than assuming attachment #1) is what lets us handle
+    evening mails that pair the Excel with a PPT: the Excel might sit at
+    any 1-indexed position.
+    """
+    try:
+        atts = msg.Attachments
+    except Exception:  # noqa: BLE001
+        return None
+    if atts.Count < 1:
+        return None
+    for i in range(1, atts.Count + 1):
+        try:
+            att  = atts.Item(i)
+            name = str(getattr(att, "FileName", "") or "")
+        except Exception:  # noqa: BLE001
+            continue
+        if not name.lower().endswith((".xls", ".xlsx", ".xlsm")):
+            continue
+        fd = extract_file_date(name)
+        if fd is None:
+            continue
+        return name, fd
+    return None
+
+
 # ─── Outlook COM: find the next unprocessed mail ─────────────────────────────
 def _find_next_mail(
     after: Optional[date],
@@ -250,39 +286,35 @@ def _find_next_mail(
     items = inbox.Items
     items.Sort("[ReceivedTime]", False)         # oldest first
 
-    # Restrict to the last LOOKBACK_DAYS days server-side — much faster than
-    # scanning years of Inbox. Missed backlog past this cutoff is user-managed.
-    cutoff      = date.today() - timedelta(days=LOOKBACK_DAYS)
-    start_str   = datetime.combine(cutoff, dtime.min).strftime("%m/%d/%Y %I:%M %p")
-    restriction = f"[ReceivedTime] >= '{start_str}'"
-    try:
-        items = items.Restrict(restriction)
-    except Exception as e:  # noqa: BLE001
-        log.warning("Outlook Restrict failed (%s) — scanning full inbox instead", e)
+    # We do NOT use items.Restrict — its date-string parsing is locale-
+    # sensitive (US format on an en-IN client can silently return zero rows
+    # without raising). At ~1000s of items this iteration is trivial.
+    cutoff = date.today() - timedelta(days=LOOKBACK_DAYS)
 
     # For each file-date encountered, keep the EARLIEST-received message.
+    # Identification is subject-based (SUBJECT_MATCH), NOT attachment-count
+    # based — evening mails can carry 1 OR 2 attachments, so we pick the
+    # first Excel attachment whose filename parses to a file-date.
     by_date: Dict[date, Tuple[datetime, object, str]] = {}
     for msg in items:
         try:
-            subj = str(getattr(msg, "Subject", "") or "")
-            if SUBJECT_MATCH not in subj.lower():
-                continue
-            atts = msg.Attachments
-            if atts.Count != 1:
-                continue        # filters the evening 2-attachment mail
-            att      = atts.Item(1)  # 1-indexed
-            att_name = str(getattr(att, "FileName", "") or "")
-            if not att_name.lower().endswith((".xls", ".xlsx", ".xlsm")):
-                continue
-            file_dt  = extract_file_date(att_name)
-            if file_dt is None:
-                log.info("Skipping mail — no parseable date in '%s'.", att_name)
-                continue
-            if after is not None and file_dt <= after:
-                continue        # dedupe resends + skip pre-install backlog
             received = getattr(msg, "ReceivedTime", None)
             if received is None:
                 continue
+            try:
+                if received.date() < cutoff:
+                    continue                  # older than LOOKBACK_DAYS
+            except Exception:  # noqa: BLE001
+                pass
+            subj = str(getattr(msg, "Subject", "") or "")
+            if SUBJECT_MATCH not in subj.lower():
+                continue
+            picked = _pick_excel_with_date(msg)
+            if picked is None:
+                continue
+            att_name, file_dt = picked
+            if after is not None and file_dt <= after:
+                continue        # dedupe resends + skip pre-install backlog
             existing = by_date.get(file_dt)
             if existing is None or received < existing[0]:
                 by_date[file_dt] = (received, msg, att_name)
@@ -297,11 +329,20 @@ def _find_next_mail(
     return msg, att_name, oldest_file_dt
 
 
-def _try_move_to_cc(msg, source_label: str) -> None:
-    """Move the processed mail into Inbox\\TSD\\CC (per CC_FOLDER_PATH).
+def _try_sweep_processed_to_cc(floor: date) -> None:
+    """Sweep every Inbox Pending-Calls mail whose Excel-attachment file-date
+    is <= floor into Inbox\\TSD\\CC.
 
-    Best-effort: any failure here is logged + audited but never breaks the
-    pipeline — the merge has already succeeded by the time we get here.
+    Catches:
+      - The morning mail we just processed.
+      - The evening mail for the same file-date (with 1 OR 2 attachments —
+        we identify it by subject + parseable Excel file-date, not count).
+      - Same-date resends that arrived later.
+      - Stragglers from earlier days that never got moved (e.g., a Day-1
+        evening mail that landed after the Day-1 fire had already run).
+
+    Best-effort: any COM failure here is logged + audited but never breaks
+    the pipeline. The merge has already committed by the time we get here.
     """
     import pythoncom            # noqa: F401  (COM init under Task Scheduler)
     import win32com.client as win32
@@ -310,36 +351,90 @@ def _try_move_to_cc(msg, source_label: str) -> None:
     try:
         outlook   = win32.Dispatch("Outlook.Application")
         namespace = outlook.GetNamespace("MAPI")
-        target    = namespace.GetDefaultFolder(6)   # 6 = olFolderInbox
+        inbox     = namespace.GetDefaultFolder(6)   # 6 = olFolderInbox
+        target    = inbox
         for name in CC_FOLDER_PATH:
             target = target.Folders[name]
-        msg.Move(target)
-        log.info("Moved processed mail (%s) → %s.", source_label, dest_display)
-        _audit("moved", source_file=source_label, destination=dest_display)
     except Exception as e:  # noqa: BLE001
-        log.warning(
-            "Could not move mail to %s (%s: %s). Merge already succeeded; "
-            "move step skipped.",
-            dest_display, type(e).__name__, e)
-        _audit("move_failed",
-               source_file=source_label,
-               destination=dest_display,
-               error=f"{type(e).__name__}: {e}")
+        log.warning("Sweep: cannot open %s (%s: %s).",
+                    dest_display, type(e).__name__, e)
+        _audit("move_failed", destination=dest_display,
+               error=f"open target: {type(e).__name__}: {e}")
+        return
+
+    items = inbox.Items
+    items.Sort("[ReceivedTime]", False)
+    cutoff = date.today() - timedelta(days=LOOKBACK_DAYS)
+
+    # Collect first — moving items while enumerating the same collection
+    # skips entries (COM iterator invalidation). Iterate everything and
+    # filter in Python; items.Restrict on [ReceivedTime] is locale-flaky.
+    candidates: List[Tuple[object, str, date]] = []
+    for msg in items:
+        try:
+            received = getattr(msg, "ReceivedTime", None)
+            if received is not None:
+                try:
+                    if received.date() < cutoff:
+                        continue
+                except Exception:  # noqa: BLE001
+                    pass
+            subj = str(getattr(msg, "Subject", "") or "")
+            if SUBJECT_MATCH not in subj.lower():
+                continue
+            picked = _pick_excel_with_date(msg)
+            if picked is None:
+                continue
+            att_name, fd = picked
+            if fd > floor:
+                continue        # not yet processed — leave in Inbox
+            candidates.append((msg, att_name, fd))
+        except Exception as e:  # noqa: BLE001
+            log.warning("Sweep: skipping mail (%s: %s)",
+                        type(e).__name__, e)
+
+    moved = 0
+    for msg, att_name, fd in candidates:
+        try:
+            msg.Move(target)
+            moved += 1
+            _audit("moved",
+                   source_file=att_name,
+                   file_date=fd.isoformat(),
+                   destination=dest_display)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Sweep: move failed for '%s' (%s: %s).",
+                        att_name, type(e).__name__, e)
+            _audit("move_failed",
+                   source_file=att_name,
+                   file_date=fd.isoformat(),
+                   destination=dest_display,
+                   error=f"{type(e).__name__}: {e}")
+    log.info("Sweep moved %d mail(s) with file-date <= %s to %s.",
+             moved, floor.isoformat(), dest_display)
 
 
-def _save_attachment(msg, dest_path: Path) -> None:
-    """Save the (single) attachment of msg to dest_path AS-IS.
+def _save_attachment(msg, att_name: str, dest_path: Path) -> None:
+    """Save the attachment named att_name from msg to dest_path AS-IS.
 
-    No renaming, no format conversion. The destination filename is whatever
-    the sender used, which matches what the user already saves by hand. If a
-    file with that name already exists, SaveAsFile refuses — delete it first.
+    Iterates msg.Attachments to find the right one by filename — do NOT
+    assume it's at index 1, because the evening mail may pair a PPT with
+    the Excel in either order. No renaming, no format conversion. Deletes
+    the destination first if it already exists (SaveAsFile refuses to
+    overwrite).
     """
     try:
         if dest_path.exists():
             dest_path.unlink()
     except OSError:
         pass
-    msg.Attachments.Item(1).SaveAsFile(str(dest_path))
+    atts = msg.Attachments
+    for i in range(1, atts.Count + 1):
+        att = atts.Item(i)
+        if str(getattr(att, "FileName", "") or "") == att_name:
+            att.SaveAsFile(str(dest_path))
+            return
+    raise ValueError(f"Attachment named {att_name!r} not found on message.")
 
 
 # ─── Data pipeline ───────────────────────────────────────────────────────────
@@ -471,7 +566,7 @@ def _process_next(dry_run_attachment: Optional[Path] = None) -> int:
         msg, att_name, file_date = found
         source_path  = RAW_FILES_DIR / att_name
         try:
-            _save_attachment(msg, source_path)
+            _save_attachment(msg, att_name, source_path)
             log.info("Saved attachment as-is: %s (file-date %s)",
                      source_path.name, file_date.isoformat())
             source_label = source_path.name
@@ -559,11 +654,12 @@ def _process_next(dry_run_attachment: Optional[Path] = None) -> int:
     state["last_processed_added"]  = added
     _write_state(state)
 
-    # 7. Best-effort: move the processed mail to Inbox\TSD\CC. ───────────────
-    #    Only in live Outlook mode (msg is None during dry-run). Failure here
-    #    is logged + audited but does not fail the run — the merge is done.
+    # 7. Best-effort: sweep every Inbox Pending-Calls mail whose Excel
+    #    file-date is <= the new floor (= file_date we just processed) into
+    #    Inbox\TSD\CC. Catches morning + evening + resends + stragglers.
+    #    Only in live Outlook mode (msg is None during dry-run).
     if msg is not None:
-        _try_move_to_cc(msg, source_label)
+        _try_sweep_processed_to_cc(file_date)
 
     return 0
 
