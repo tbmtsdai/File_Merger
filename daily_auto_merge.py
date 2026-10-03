@@ -102,6 +102,8 @@ LOG_BACKUP_COUNT     = 3
 
 APP_ID               = "ZOHO Auto-Merge"
 
+MERGED               = 100   # internal: _process_next merged a file; not an exit code
+
 # After a successful merge, move the processed mail to
 # Inbox\<CC_FOLDER_PATH[0]>\<CC_FOLDER_PATH[1]>\... — matches the user's
 # manual "file it under TSD\CC" habit and keeps the Inbox clean.
@@ -525,8 +527,9 @@ def _process_next(dry_run_attachment: Optional[Path] = None) -> int:
     sender's original name, merges, and moves the mail to Inbox\\TSD\\CC.
     On dry-run, the given file is used directly.
 
-    Exit codes:
-      0 = success OR nothing to do
+    Return codes:
+      MERGED = one file merged (main() loops again to drain the backlog)
+      0 = nothing to do
       2 = Outlook COM failure
       3 = save-attachment failure
       4 = read-attachment failure
@@ -661,7 +664,7 @@ def _process_next(dry_run_attachment: Optional[Path] = None) -> int:
     if msg is not None:
         _try_sweep_processed_to_cc(file_date)
 
-    return 0
+    return MERGED
 
 
 def main() -> int:
@@ -677,7 +680,20 @@ def main() -> int:
             return 2
 
     try:
-        return _process_next(dry_run_attachment=dry_path)
+        if dry_path is not None:
+            rc = _process_next(dry_run_attachment=dry_path)
+            return 0 if rc == MERGED else rc
+        # Drain the whole backlog in one run: keep merging the oldest
+        # unprocessed file until nothing is left, or a pause / error stops us.
+        merged = 0
+        while True:
+            rc = _process_next()
+            if rc != MERGED:
+                break
+            merged += 1
+        if merged > 1:
+            log.info("Backlog drained: %d file(s) merged in this run.", merged)
+        return rc
     except Exception as e:  # noqa: BLE001
         log.critical("Unhandled error: %s\n%s", e, traceback.format_exc())
         _toast("Auto-merge crashed",

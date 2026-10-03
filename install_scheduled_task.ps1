@@ -76,7 +76,7 @@ $settings = New-ScheduledTaskSettingsSet `
     -DontStopIfGoingOnBatteries `
     -StartWhenAvailable `
     -MultipleInstances IgnoreNew `
-    -ExecutionTimeLimit (New-TimeSpan -Minutes 15)
+    -ExecutionTimeLimit (New-TimeSpan -Hours 2)   # one run drains the whole backlog (2-4 min per file)
 
 # ── Principal: current interactive user, only when logged in ───────────────
 $principal = New-ScheduledTaskPrincipal `
