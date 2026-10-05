@@ -318,7 +318,24 @@ def apply_column_map(df: pd.DataFrame, mapping: Dict[str, str]) -> pd.DataFrame:
     if not mapping:
         return df
     rn = {c: mapping[c] for c in df.columns if c in mapping}
-    return df.rename(columns=rn) if rn else df
+    if not rn:
+        return df
+    out = df.rename(columns=rn)
+    # Several source columns in the SAME file can map to one canonical name
+    # (e.g. Customer Type + three "Customer BU ..." columns). Coalesce them into
+    # one column: the column already carrying the canonical name wins, then the
+    # mapped sources from most-filled to least-filled.
+    for name in out.columns[out.columns.duplicated()].unique():
+        native = [i for i, c in enumerate(df.columns) if c == name]
+        mapped = [i for i, c in enumerate(df.columns) if rn.get(c) == name]
+        order = native + sorted(mapped, key=lambda i: -df.iloc[:, i]
+                                .replace(r"^\s*$", pd.NA, regex=True).notna().sum())
+        block = df.iloc[:, order].replace(r"^\s*$", pd.NA, regex=True)
+        merged = block.bfill(axis=1).iloc[:, 0]
+        pos = list(out.columns).index(name)
+        out = out.loc[:, out.columns != name]
+        out.insert(pos, name, merged.values)
+    return out
 
 
 def unknown_columns(df: pd.DataFrame,
