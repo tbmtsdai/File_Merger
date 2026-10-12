@@ -391,14 +391,23 @@ def read_all_sheets_cached(file_bytes, filename):
 
 # Local path to the OneDrive-backed Raw Files folder used by the daily
 # auto-merge script. When the app runs on this Windows laptop, confirmed
-# column mappings are persisted here so tomorrow's automated run picks them up
-# without any extra click. Missing folder (cloud, or a different machine) is
-# a silent no-op — the app still works, just doesn't teach the auto-merge.
+# column mappings are saved here ONLY if the "save for auto-merge" tick-box is
+# ticked (pre-ticked for Pending Calls files only). Missing folder (cloud, or
+# a different machine) hides the tick-box and nothing is saved.
 _RAW_FILES_DIR = (
     r"C:\Users\k.buch\OneDrive - Transasia Bio Medicals Ltd"
     r"\TBM 2026 Onwards\Pending Calls\Raw Files"
 )
 _COLUMN_MAP_PATH = os.path.join(_RAW_FILES_DIR, "column_map.json")
+
+
+def _looks_like_pending_calls(fnames):
+    """True if every uploaded file is a Pending Calls report or the rolling
+    merged output. Decides the default of the 'save for auto-merge' tick-box,
+    so mappings for unrelated data never leak into the Pending Calls map."""
+    names = [os.path.basename(f).lower() for f in fnames]
+    return bool(names) and all(
+        "pending call" in n or n.startswith("merged_output") for n in names)
 
 
 def _persist_column_map_from_app(renames_map):
@@ -524,6 +533,16 @@ def render_column_mapping(all_triples, tab_key="upload"):
                 st.caption("\n".join(sample_lines))
             rows_data.append((col, [f for f in fnames if col in file_cols[f]], canonical.strip()))
 
+        save_for_auto = False
+        if os.path.isdir(_RAW_FILES_DIR):
+            save_for_auto = st.checkbox(
+                "Also save these mappings for the daily Pending Calls auto-merge",
+                value=_looks_like_pending_calls(fnames),
+                key=f"cmap_save_auto_{tab_key}",
+                help="Tick only when these files are Pending Calls reports. "
+                     "Mappings for any other data must stay unticked, or they "
+                     "will be applied to the daily Pending Calls files too.")
+
         submitted = st.form_submit_button(
             "Apply Column Mapping", type="primary", use_container_width=True)
 
@@ -535,12 +554,12 @@ def render_column_mapping(all_triples, tab_key="upload"):
                     renames_map.setdefault(f, {})[col] = canonical
         st.session_state[ss_key] = renames_map
         n = sum(len(v) for v in renames_map.values())
-        # Persist confirmed mapping to Raw Files\column_map.json so the daily
-        # auto-merge script picks it up on its next run without another click.
-        # Silent no-op on machines that don't have the Raw Files folder.
-        _persist_column_map_from_app(renames_map)
+        if save_for_auto:
+            _persist_column_map_from_app(renames_map)
         if n:
-            st.success(f"Mapping applied: {n} rename(s). Sheets re-grouped below.")
+            st.success(f"Mapping applied: {n} rename(s). Sheets re-grouped below."
+                       + (" Also saved for the daily Pending Calls auto-merge."
+                          if save_for_auto else ""))
         else:
             st.info("No renames applied — all canonical names match originals.")
 
