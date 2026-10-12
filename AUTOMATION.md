@@ -140,8 +140,19 @@ If the day's file has **any** unknown column, the script:
 
 **To teach a mapping:** open the app (`run_app.bat` → localhost:8501),
 load today's file plus at least one older file that already merges, and
-use the Column Alignment step to assign canonical names. Submitting the
-form writes the learned mapping to `column_map.json` automatically.
+use the Column Alignment step to assign canonical names. Leave the tick-box
+**"Also save these mappings for the daily Pending Calls auto-merge"** ticked
+and submit. Three guards protect the map:
+
+1. The tick-box can only be ticked when every uploaded file is a Pending
+   Calls report or `merged_output_auto` (greyed out for any other data). It
+   only appears on this laptop — never on the hosted app.
+2. Only "variant spelling → existing column of `merged_output_auto`"
+   mappings are saved. Renaming a real column or inventing a new one is
+   refused and shown on screen.
+3. Before each save the map is backed up to `Raw Files\column_map_backups\`
+   with a timestamp, and the attempt is logged in `column_audit.jsonl`
+   (event `mapping_saved_from_app`, with accepted and refused entries).
 
 ---
 

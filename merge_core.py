@@ -16,6 +16,8 @@ import io
 import json
 import os
 import re
+import shutil
+from datetime import datetime
 from typing import Dict, Iterable, List, Tuple
 
 import pandas as pd
@@ -310,6 +312,75 @@ def merge_and_save_column_map(path: str,
     current.update({k: v for k, v in (new_flat or {}).items() if k and v})
     save_column_map(path, current)
     return current
+
+
+def read_excel_header(path: str) -> set:
+    """Column names in the first row of every sheet, read in streaming mode
+    (fast even for a large file — no data rows are loaded)."""
+    from openpyxl import load_workbook
+    wb = load_workbook(path, read_only=True)
+    try:
+        cols = set()
+        for ws in wb.worksheets:
+            row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
+            cols.update(str(c) for c in row if c is not None)
+        return cols
+    finally:
+        wb.close()
+
+
+def save_mapping_safely(map_path: str,
+                        new_flat: Dict[str, str],
+                        canonical_cols: Iterable[str],
+                        audit_path: str | None = None,
+                        backup_dir: str | None = None,
+                        ) -> Tuple[Dict[str, str], Dict[str, Tuple[str, str]]]:
+    """Guarded write of app-confirmed mappings into the auto-merge column map.
+
+    A mapping src -> dst is accepted only if it renames a VARIANT spelling into
+    a column the merged history already has: dst must be a canonical column and
+    src must not be one (so real columns can never be renamed, and no new
+    columns can be invented). A src already mapped to a different dst is
+    refused too. Before any write, the current map is backed up with a
+    timestamp; every save attempt is appended to the audit trail.
+
+    Returns (accepted {src: dst}, refused {src: (dst, reason)}).
+    """
+    canonical = set(canonical_cols)
+    current = load_column_map(map_path)
+    accepted: Dict[str, str] = {}
+    refused: Dict[str, Tuple[str, str]] = {}
+    for src, dst in (new_flat or {}).items():
+        if src in TRACKING_COLS or dst in TRACKING_COLS:
+            refused[src] = (dst, "tracking column, never remapped")
+        elif src in canonical:
+            refused[src] = (dst, f"'{src}' is already a real column in the merged history")
+        elif dst not in canonical:
+            refused[src] = (dst, f"'{dst}' is not a column in the merged history")
+        elif src in current and current[src] != dst:
+            refused[src] = (dst, f"already mapped to '{current[src]}'")
+        elif current.get(src) != dst:
+            accepted[src] = dst
+
+    if accepted:
+        if backup_dir and os.path.exists(map_path):
+            os.makedirs(backup_dir, exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            shutil.copy2(map_path, os.path.join(backup_dir, f"column_map_{stamp}.json"))
+        current.update(accepted)
+        save_column_map(map_path, current)
+
+    if audit_path and (accepted or refused):
+        now = datetime.now()
+        record = {"timestamp": now.isoformat(timespec="seconds"),
+                  "date": now.date().isoformat(),
+                  "event": "mapping_saved_from_app",
+                  "accepted": accepted,
+                  "refused": {k: {"to": v[0], "reason": v[1]} for k, v in refused.items()}}
+        with open(audit_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    return accepted, refused
 
 
 def apply_column_map(df: pd.DataFrame, mapping: Dict[str, str]) -> pd.DataFrame:

@@ -25,6 +25,7 @@ from merge_core import (
     read_from_path, _make_excel_writer, to_excel_bytes, to_csv_bytes,
     load_column_map, save_column_map, flatten_renames_map,
     merge_and_save_column_map, apply_column_map, unknown_columns,
+    read_excel_header, save_mapping_safely,
 )
 
 try:
@@ -391,9 +392,10 @@ def read_all_sheets_cached(file_bytes, filename):
 
 # Local path to the OneDrive-backed Raw Files folder used by the daily
 # auto-merge script. When the app runs on this Windows laptop, confirmed
-# column mappings are saved here ONLY if the "save for auto-merge" tick-box is
-# ticked (pre-ticked for Pending Calls files only). Missing folder (cloud, or
-# a different machine) hides the tick-box and nothing is saved.
+# column mappings are saved here ONLY via the "save for auto-merge" tick-box,
+# which can be ticked only for Pending Calls files; save_mapping_safely then
+# keeps only variant -> existing-column mappings, backs up and audits. Missing
+# folder (cloud, or a different machine) hides the tick-box; nothing is saved.
 _RAW_FILES_DIR = (
     r"C:\Users\k.buch\OneDrive - Transasia Bio Medicals Ltd"
     r"\TBM 2026 Onwards\Pending Calls\Raw Files"
@@ -411,20 +413,35 @@ def _looks_like_pending_calls(fnames):
 
 
 def _persist_column_map_from_app(renames_map):
-    """Write confirmed column mappings (per-file → flat) to
-    Raw Files\\column_map.json so daily_auto_merge.py can apply them
-    automatically on its next run. Silent no-op if the Raw Files folder is
-    not present on this machine."""
+    """Guarded save of confirmed mappings into Raw Files\\column_map.json for
+    the daily auto-merge. Only 'variant -> existing merged-history column'
+    mappings are kept; the map is backed up and every attempt is audited.
+    Shows the outcome in the app. Never breaks the merge itself."""
     if not os.path.isdir(_RAW_FILES_DIR):
         return
+    flat = flatten_renames_map(renames_map)
+    if not flat:
+        return
+    history = os.path.join(_RAW_FILES_DIR, "merged_output_auto.xlsx")
     try:
-        flat = flatten_renames_map(renames_map)
-        if not flat:
+        if not os.path.exists(history):
+            st.warning("Not saved for the auto-merge: merged_output_auto.xlsx "
+                       "was not found, so the mapping could not be checked.")
             return
-        merge_and_save_column_map(_COLUMN_MAP_PATH, flat)
-    except Exception:
-        # Never let a persistence failure break the merge itself.
-        pass
+        accepted, refused = save_mapping_safely(
+            _COLUMN_MAP_PATH, flat, read_excel_header(history),
+            audit_path=os.path.join(_RAW_FILES_DIR, "column_audit.jsonl"),
+            backup_dir=os.path.join(_RAW_FILES_DIR, "column_map_backups"))
+    except Exception as e:
+        st.warning(f"Not saved for the auto-merge ({type(e).__name__}: {e}). "
+                   "The merge below is unaffected.")
+        return
+    if accepted:
+        st.success("Saved for the daily auto-merge: "
+                   + "; ".join(f"`{s}` → `{d}`" for s, d in accepted.items()))
+    if refused:
+        st.warning("**Not saved** for the daily auto-merge (kept for this merge only):\n\n"
+                   + "\n".join(f"- `{s}` → `{d}`: {why}" for s, (d, why) in refused.items()))
 
 
 def render_column_mapping(all_triples, tab_key="upload"):
@@ -535,13 +552,17 @@ def render_column_mapping(all_triples, tab_key="upload"):
 
         save_for_auto = False
         if os.path.isdir(_RAW_FILES_DIR):
+            is_pending = _looks_like_pending_calls(fnames)
             save_for_auto = st.checkbox(
                 "Also save these mappings for the daily Pending Calls auto-merge",
-                value=_looks_like_pending_calls(fnames),
+                value=is_pending,
+                disabled=not is_pending,
                 key=f"cmap_save_auto_{tab_key}",
-                help="Tick only when these files are Pending Calls reports. "
-                     "Mappings for any other data must stay unticked, or they "
-                     "will be applied to the daily Pending Calls files too.")
+                help=("Only renames of a variant spelling into an existing "
+                      "Pending Calls column are saved; everything is backed up "
+                      "and logged." if is_pending else
+                      "Available only when every uploaded file is a Pending "
+                      "Calls report or merged_output_auto."))
 
         submitted = st.form_submit_button(
             "Apply Column Mapping", type="primary", use_container_width=True)
@@ -557,9 +578,7 @@ def render_column_mapping(all_triples, tab_key="upload"):
         if save_for_auto:
             _persist_column_map_from_app(renames_map)
         if n:
-            st.success(f"Mapping applied: {n} rename(s). Sheets re-grouped below."
-                       + (" Also saved for the daily Pending Calls auto-merge."
-                          if save_for_auto else ""))
+            st.success(f"Mapping applied: {n} rename(s). Sheets re-grouped below.")
         else:
             st.info("No renames applied — all canonical names match originals.")
 
